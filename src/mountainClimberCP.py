@@ -1,4 +1,4 @@
-#!/user/bin/python -tt
+#!/usr/bin/env python3
 """
 Identify change points throughout the entire TU of each individual sample.
 The premise of this approach is to identify significant change points in the
@@ -19,7 +19,11 @@ import peakutils					# v1.0.3
 from collections import defaultdict, OrderedDict, deque
 import pysam 						# v0.9.0
 import pybedtools as pb
-from functions import sort_bedfile
+
+try:
+	from functions import sort_bedfile, run_command
+except ImportError:
+	from src.functions import sort_bedfile, run_command
 
 # median filter
 from bisect import bisect_left, insort
@@ -58,8 +62,13 @@ def bedgraph_per_gene_ss(genes, bg_plus, bg_minus, bgfile):
 	m.close()
 
 	# === bedtools intersect: concatenate + & - strands ===
-	pb.BedTool(plus_bed).intersect(bg_plus, wo=True, sorted=True).saveas(bgfile + '.plus')
-	pb.BedTool(minus_bed).intersect(bg_minus, wo=True, sorted=True).saveas(bgfile + '.minus')
+	sort_bedfile(bg_plus, bg_plus + ".sorted")
+	pb.BedTool(plus_bed).intersect(bg_plus + ".sorted", wo=True, sorted=True).saveas(bgfile + '.plus')
+	os.remove(bg_plus + ".sorted")
+
+	sort_bedfile(bg_minus, bg_minus + ".sorted")
+	pb.BedTool(minus_bed).intersect(bg_minus + ".sorted", wo=True, sorted=True).saveas(bgfile + '.minus')
+	os.remove(bg_minus + ".sorted")
 
 	t = open(bgfile, 'w')
 	t.write(open(bgfile + '.plus').read())
@@ -72,7 +81,10 @@ def bedgraph_per_gene_ss(genes, bg_plus, bg_minus, bgfile):
 
 def bedgraph_per_gene_nss(genes, bg, bgfile):
 	"""Bedtools intersect, non-strand-specific"""
-	pb.BedTool(genes).intersect(bg, wo=True, sorted=True).saveas(bgfile)
+
+	sort_bedfile(bg, bg + ".sorted")
+	pb.BedTool(genes).intersect(bg + ".sorted", wo=True, sorted=True).saveas(bgfile)
+	os.remove(bg + ".sorted")
 
 
 def get_exon_cov(exon_list, cov_list):
@@ -158,7 +170,7 @@ def median_filter(seq, window_size):
 	Median filter.
 	Reference: https://groups.google.com/forum/#!topic/comp.lang.python/0OARyHF0wtA
 	"""
-	zeros = [0] * (window_size / 2)  # pad zeros
+	zeros = [0] * (window_size // 2)  # pad zeros
 	seq = zeros + seq + zeros
 
 	seq = iter(seq)
@@ -171,13 +183,13 @@ def median_filter(seq, window_size):
 		d.append(item)
 		insort(s, item)
 	if len(s) % 2 == 0:
-		med = float((s[len(d) / 2 - 1] + s[len(d) / 2])) / float(2)  # even number: take average of 2
+		med = float((s[len(d) // 2 - 1] + s[len(d) // 2])) / float(2)  # even number: take average of 2
 		result.append(med)
 	else:
-		result.append(float(s[len(d) / 2]))
+		result.append(float(s[len(d) // 2]))
 
 	# all other windows
-	m = window_size / 2
+	m = window_size // 2
 	for item in seq:
 		old = d.popleft()
 		d.append(item)
@@ -433,86 +445,43 @@ def infer_strand(intron_list, chrom, genome, verbose):
 		strand_inferred = '+'
 
 	if verbose:
-		print '- inferred strand:', strand_inferred
-		print '  - counts: minus', count_minus, 'plus', count_plus, 'unknown', count_unknown
+		print ('- inferred strand:', strand_inferred)
+		print ('  - counts: minus', count_minus, 'plus', count_plus, 'unknown', count_unknown)
 
 	return strand_inferred
 
 
-def main(argv):
-	# --------------------------------------------------
-	# get args
-	# --------------------------------------------------
-	parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-									 description='Identify change points throughout each TU using the cumulative read sum (CRS).')
-	group = parser.add_argument_group('Input')
-	group.add_argument('-i', '--input_bg', dest='input_bg', type=str, metavar='',
-					   help='Bedgraph: non-strand-specific or plus strand.')
-	group.add_argument('-m', '--input_bg_minus', dest='input_bg_minus', type=str, metavar='',
-					   help='Bedgraph, minus strand (strand-specific only).')
-	group.add_argument('-g', '--input_regions', dest='input_regions', type=str, metavar='',
-					   help='Bed file of transcription units.')
-	group.add_argument('-j', '--junc', dest='junc', type=str, metavar='',
-					   help='Bed file of junction read counts.')
-	group.add_argument('-x', '--genome', dest='genome', type=str, metavar='',
-					   help='Genome fasta file.')
-
-	group = parser.add_argument_group('Parameters')
-	group.add_argument('-a', '--peak_thresh', dest='peak_thresh', type=float, default=-1.0, metavar='',
-					   help='Normalized threshold (float between [0., 1.]). Only the peaks with amplitude higher than the threshold will be detected. -1.0 indicates optimizing between [0.01, 0.05, 0.1] for each TU.')
-	group.add_argument('-d', '--peak_min_dist', dest='peak_min_dist', type=int, default=-1, metavar='',
-					   help='Minimum distance between each detected peak. The peak with the highest amplitude is preferred to satisfy this constraint. -1 indicates optimizing between [10, 50] for each TU.')
-	group.add_argument('-w', '--winsize', dest='winsize', type=int, default=-1, metavar='',
-					   help='Window size for de-noising and increasing precision. -1 indicates optimizing between [50, max(100, gene_length / 100) * 2].')
-	group.add_argument('-t', '--test_thresh', dest='test_thresh', type=float, default=0.001, metavar='',
-					   help='Maximum p-value threshold for KS test and t-test.')
-	group.add_argument('-l', '--min_length', dest='min_length', type=int, default=1000, metavar='',
-					   help='Minimum gene length for running mountain climber.')
-	group.add_argument('-e', '--min_expn', dest='min_expn', type=int, default=10, metavar='',
-					   help='Minimum expression level (average # reads per bp)')
-	group.add_argument('-s', '--min_expn_distal', dest='min_expn_distal', type=int, default=1, metavar='',
-					   help='Minimum distal expression level (average # reads per bp).')
-	group.add_argument('-f', '--fcthresh', dest='fcthresh', type=float, default=1.5, metavar='',
-					   help='Minimum fold change.')
-	group.add_argument('-u', '--juncdist', dest='juncdist', type=int, default=10, metavar='',
-					   help='Minimum distance to exon-intron junction.')
-	group.add_argument('-n', '--minjxncount', dest='minjxncount', type=int, default=2, metavar='',
-					   help='Minimum junction read count.')
-	group.add_argument('-z', '--max_end_ru', dest='max_end_ru', type=float, default=0.01, metavar='',
-					   help='Maximum end relative usage = coverage of end / max segment coverage.')
-
-	group = parser.add_argument_group('Output')
-	group.add_argument('-o', '--output', dest='output', type=str, metavar='',
-					   help='Output prefix. Bed file of change points has name field = CPlabel:gene:TUstart:TUend:inferred_strand:winsize:segment_coverage:average_exon_coverage. Score = log2(fold change).')
-	group.add_argument('-p', '--plot', dest='plot', action='store_true',
-					   help='Plot the cumulative read sum (CRS), the distance from CRS to line y=ax, and the coverage with predicted change points.')
-	group.add_argument('-v', '--verbose', dest='verbose', action='store_true',
-					   help='Print progress.')
-	args = parser.parse_args()
-
+def run(
+	input_bg, input_bg_minus, input_regions, output, 
+	genome, plot, junc, minjxncount, juncdist,
+	min_length, test_thresh, 
+	min_expn, min_expn_distal,
+	min_segments,
+	winsize, peak_thresh, peak_min_dist, 
+	fcthresh, max_end_ru, verbose):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
-	print '\njob starting:', str(datetime.now().time())
+	print ('\njob starting:', str(datetime.now().time()))
 
-	if not args.input_bg:
+	if not input_bg:
 		sys.stderr.write('EXIT: Please provide --input_bg\n')
 		sys.exit(1)
 
-	if not args.input_regions:
+	if not input_regions:
 		sys.stderr.write('EXIT: Please provide --input_regions\n')
 		sys.exit(1)
 
-	if not args.output:
+	if not output:
 		sys.stderr.write('EXIT: Please provide --output\n')
 		sys.exit(1)
 
-	if not args.input_bg_minus and not args.genome:
+	if not input_bg_minus and not genome:
 		sys.stderr.write('EXIT: for non-strand-specific RNA-Seq, please provide a --genome file\n')
 		sys.exit(1)
 
-	plot_dir = os.path.splitext(args.output)[0] + '_plots'
-	if args.plot:
+	plot_dir = os.path.splitext(output)[0] + '_plots'
+	if plot:
 		if os.path.exists(plot_dir):
 			for filename in os.listdir(plot_dir):
 				os.remove(os.path.join(plot_dir, filename))
@@ -520,17 +489,17 @@ def main(argv):
 			os.mkdir(plot_dir)
 
 	# === get bedgraph per gene ===
-	print '- bedtools intersect', str(datetime.now().time())
-	bgfile = os.path.splitext(args.output)[0] + '_gene_bedgraph_intersect.txt'
-	if args.input_bg_minus: 	# strand-specific
-		bedgraph_per_gene_ss(args.input_regions, args.input_bg, args.input_bg_minus, bgfile)
+	print ('- bedtools intersect', str(datetime.now().time()))
+	bgfile = os.path.splitext(output)[0] + '_gene_bedgraph_intersect.txt'
+	if input_bg_minus: 	# strand-specific
+		bedgraph_per_gene_ss(input_regions, input_bg, input_bg_minus, bgfile)
 	else: 						# non-strand-specific
-		bedgraph_per_gene_nss(args.input_regions, args.input_bg, bgfile)
+		bedgraph_per_gene_nss(input_regions, input_bg, bgfile)
 
 	# === get introns from junction counts ===
-	print '- getting junction reads', str(datetime.now().time())
+	print ('- getting junction reads', str(datetime.now().time()))
 	intron2jxnCount = OrderedDict()
-	f = open(args.junc, 'r')
+	f = open(junc, 'r')
 	for line in f:
 		if not line.startswith('track'):
 			x = line.rstrip().split('\t')
@@ -544,7 +513,7 @@ def main(argv):
 				sys.stderr.write('EXIT: did not recognize junction file format\n')
 				sys.exit(1)
 
-			if int(count) >= args.minjxncount:
+			if int(count) >= minjxncount:
 				if intron not in intron2jxnCount:
 					intron2jxnCount[intron] = count
 				else:
@@ -570,13 +539,13 @@ def main(argv):
 	count_min_length_filter_annotated = 0
 	count_min_expn_filter_annotated = 0
 
-	print '- finding change points in each gene', str(datetime.now().time())
+	print ('- finding change points in each gene', str(datetime.now().time()))
 	maxl = 0
 	with open(bgfile, 'r') as f:
 		for l, line in enumerate(f):
 			maxl = l
 
-	o = open(args.output + '.temp', 'w')
+	o = open(output + '.temp', 'w')
 	with open(bgfile, 'r') as f:
 		for l, line in enumerate(f):
 			# not EOF -> read the line
@@ -594,7 +563,7 @@ def main(argv):
 					sys.stderr.write(line)
 					sys.exit(1)
 
-				if not args.input_bg_minus:
+				if not input_bg_minus:
 					astrand = 0
 
 				astart = int(astart)
@@ -699,11 +668,11 @@ def main(argv):
 					if 'novel' not in geneid:
 						count_genes_with_reads_annotated += 1
 
-					if args.verbose:
-						print '\ngene:', geneid, start, end, chrom, strand, new_start, new_end, \
-							cov_array.size, str(datetime.now().time())
+					if verbose:
+						print ('\ngene:', geneid, start, end, chrom, strand, new_start, new_end, \
+							cov_array.size, str(datetime.now().time()))
 
-					if cov_array.size >= args.min_length:
+					if cov_array.size >= min_length:
 						count_min_length_keep += 1
 
 						# === get per-base coverage ===
@@ -722,26 +691,26 @@ def main(argv):
 								strand_inferred = strand
 							elif strand == 0:
 								# === infer strand ===
-								strand_inferred = infer_strand(intron_list, chrom, args.genome, args.verbose)
+								strand_inferred = infer_strand(intron_list, chrom, genome, verbose)
 
 						else:
 							cov_avg_exon_with_utr = cov_avg
 							max_exon_cov = cov_avg
 							strand_inferred = strand if strand != 0 else 'NA'
 
-						if args.verbose:
-							print '- junctions:', jxn_list
-							print '- exons:', exon_list
-							print '- strand:', strand_inferred
-							print cov_avg_exon_with_utr, max_exon_cov
+						if verbose:
+							print ('- junctions:', jxn_list)
+							print ('- exons:', exon_list)
+							print ('- strand:', strand_inferred)
+							print (cov_avg_exon_with_utr, max_exon_cov)
 
-						if args.min_expn != -1:
-							if cov_avg_exon_with_utr < args.min_expn:
+						if min_expn != -1:
+							if cov_avg_exon_with_utr < min_expn:
 								count_min_expn_filter += 1
 								if 'novel' not in geneid:
 									count_min_expn_filter_annotated += 1
-								if args.verbose:
-									print '- did not meet min expression level:', args.min_expn, cov_avg_exon_with_utr
+								if verbose:
+									print ('- did not meet min expression level:', min_expn, cov_avg_exon_with_utr)
 								continue
 							else:
 								count_min_expn_keep += 1
@@ -753,10 +722,10 @@ def main(argv):
 							continue
 
 						# === KS test ===
-						ksp = ks_test(vert_sum_array, args.plot, os.path.join(plot_dir, geneid))
+						ksp = ks_test(vert_sum_array, plot, os.path.join(plot_dir, geneid))
 
 						peak_inds_ttest_opt = []
-						if ksp < args.test_thresh:
+						if ksp < test_thresh:
 							vert2_array = vert_array * vert_array / max(vert_array)
 							vert2_vert_sum_array, vert2_vert_array = crs(vert2_array)
 							if vert2_vert_sum_array[0] == 'NA':
@@ -764,8 +733,8 @@ def main(argv):
 								continue
 
 							# === get parameters ===
-							if args.winsize != -1:
-								denoise_winsize_list = [args.winsize]
+							if winsize != -1:
+								denoise_winsize_list = [winsize]
 							else:
 								winsize_max = max(100, int(round(vert_sum_array.size / 100, -2)))
 								denoise_winsize_list = []
@@ -775,16 +744,16 @@ def main(argv):
 									winsize_min = winsize_min + 100
 
 								denoise_winsize_list = sorted(denoise_winsize_list)
-							if args.verbose:
-								print '- de-noising window sizes:', denoise_winsize_list
+							if verbose:
+								print ('- de-noising window sizes:', denoise_winsize_list)
 
-							amp_thresh_list = [args.peak_thresh] if args.peak_thresh != -1.0 else [0.05, 0.1, 0.15]
-							if args.verbose:
-								print '- amplitude thresholds:', amp_thresh_list
+							amp_thresh_list = [peak_thresh] if peak_thresh != -1.0 else [0.05, 0.1, 0.15]
+							if verbose:
+								print ('- amplitude thresholds:', amp_thresh_list)
 
-							peak_min_dist_list = [args.peak_min_dist] if args.peak_min_dist != -1 else [10, 50]
-							if args.verbose:
-								print '- min distance between peaks:', peak_min_dist_list
+							peak_min_dist_list = [peak_min_dist] if peak_min_dist != -1 else [10, 50]
+							if verbose:
+								print ('- min distance between peaks:', peak_min_dist_list)
 
 							h = 0
 							njxns_detected = -100
@@ -799,24 +768,24 @@ def main(argv):
 							peak_inds_ttest_with_ends = []
 							for denoise_winsize in denoise_winsize_list:
 								# get distance to line & denoise
-								if args.verbose:
-									print '- de-noising', denoise_winsize, str(datetime.now().time())
+								if verbose:
+									print ('- de-noising', denoise_winsize, str(datetime.now().time()))
 								line_dist_array2, line_dist_array2_denoise = get_linedist(vert2_vert_sum_array, denoise_winsize)
 								line_dist_array, line_dist_array_denoise = get_linedist(vert_sum_array, denoise_winsize)
 
 								a2totcp = {}
 								for a, amp_thresh in enumerate(amp_thresh_list):
 									if a > 0 and a2totcp[a - 1] == 0:
-										if args.verbose:
-											print '  - skipping higher amplitude thresholds because previous gave 0 change points'
+										if verbose:
+											print ('  - skipping higher amplitude thresholds because previous gave 0 change points')
 										a2totcp[a] = 0
 									else:
 										for peak_min_dist in peak_min_dist_list:
 											# --------------------------------------------------
 											# peak calling
 											# --------------------------------------------------
-											if args.verbose:
-												print '- parameters: window size', denoise_winsize, 'amplitude', amp_thresh, 'min distance', peak_min_dist, str(datetime.now().time())
+											if verbose:
+												print ('- parameters: window size', denoise_winsize, 'amplitude', amp_thresh, 'min distance', peak_min_dist, str(datetime.now().time()))
 											peak_inds_ip_combined_filtered = []
 											peak_inds_ip_combined = []
 											peak_inds2_ip_combined = []
@@ -832,12 +801,12 @@ def main(argv):
 
 												# combine
 												peak_inds2_ip_combined = np.sort(np.append(peak_inds2_ip, peak_inds2_min_ip))
-												if args.verbose:
-													print '- peak inds max:', len(peak_inds2), str(datetime.now().time())
-													print '- peak inds min:', len(peak_inds_min2), str(datetime.now().time())
-													print '- increased precision max:', len(peak_inds2_ip), str(datetime.now().time())
-													print '- increased precision min:', len(peak_inds2_min_ip), str(datetime.now().time())
-													print '- peak inds crs^2:', len(peak_inds2_ip_combined), str(datetime.now().time())
+												if verbose:
+													print ('- peak inds max:', len(peak_inds2), str(datetime.now().time()))
+													print ('- peak inds min:', len(peak_inds_min2), str(datetime.now().time()))
+													print ('- increased precision max:', len(peak_inds2_ip), str(datetime.now().time()))
+													print ('- increased precision min:', len(peak_inds2_min_ip), str(datetime.now().time()))
+													print ('- peak inds crs^2:', len(peak_inds2_ip_combined), str(datetime.now().time()))
 
 											if np.unique(line_dist_array_denoise).size != 1:
 												# === original crs ===
@@ -851,12 +820,12 @@ def main(argv):
 
 												# combine
 												peak_inds_ip_combined = np.sort(np.append(peak_inds_ip, peak_inds_min_ip))
-												if args.verbose:
-													print '- peak inds max:', len(peak_inds), str(datetime.now().time())
-													print '- peak inds min:', len(peak_inds_min), str(datetime.now().time())
-													print '- increased precision max:', len(peak_inds_ip), str(datetime.now().time())
-													print '- increased precision min:', len(peak_inds_min_ip), str(datetime.now().time())
-													print '- peak inds crs:', len(peak_inds_ip_combined), str(datetime.now().time())
+												if verbose:
+													print ('- peak inds max:', len(peak_inds), str(datetime.now().time()))
+													print ('- peak inds min:', len(peak_inds_min), str(datetime.now().time()))
+													print ('- increased precision max:', len(peak_inds_ip), str(datetime.now().time()))
+													print ('- increased precision min:', len(peak_inds_min_ip), str(datetime.now().time()))
+													print ('- peak inds crs:', len(peak_inds_ip_combined), str(datetime.now().time()))
 
 												if np.unique(line_dist_array2_denoise).size != 1:
 													if peak_inds_ip_combined.size != 0 and peak_inds2_ip_combined.size != 0:
@@ -874,7 +843,7 @@ def main(argv):
 														temp_vert_sum_array, temp_vert_array = crs(temp_cov_array)
 														if temp_vert_sum_array[0] != 'NA' and len(temp_vert_sum_array) > 0 and max(temp_vert_sum_array) > 0:
 															temp_ksp = ks_test(temp_vert_sum_array, 0, os.path.join(plot_dir, geneid) + '_temp1')
-															if temp_ksp < args.test_thresh:
+															if temp_ksp < test_thresh:
 																temp_line_dist_array, temp_line_dist_array_denoise = get_linedist(temp_vert_sum_array, denoise_winsize)
 																if np.unique(temp_line_dist_array_denoise).size != 1:
 																	temp_peak_inds = peakutils.peak.indexes(temp_line_dist_array_denoise, thres=amp_thresh, min_dist=peak_min_dist)
@@ -889,7 +858,7 @@ def main(argv):
 														temp_vert_sum_array, temp_vert_array = crs(temp_cov_array)
 														if temp_vert_sum_array[0] != 'NA' and len(temp_vert_sum_array) > 0 and max(temp_vert_sum_array) > 0:
 															temp_ksp = ks_test(temp_vert_sum_array, 0, os.path.join(plot_dir, geneid) + '_temp2')
-															if temp_ksp < args.test_thresh:
+															if temp_ksp < test_thresh:
 																temp_line_dist_array, temp_line_dist_array_denoise = get_linedist(temp_vert_sum_array, denoise_winsize)
 																if np.unique(temp_line_dist_array_denoise).size != 1:
 																	temp_peak_inds = peakutils.peak.indexes(temp_line_dist_array_denoise, thres=amp_thresh, min_dist=peak_min_dist)
@@ -903,19 +872,19 @@ def main(argv):
 
 											peak_inds_ip_combined_filtered = np.sort(np.unique(peak_inds_ip_combined_filtered))
 
-											if args.verbose:
-												print '- peak inds combined:', len(peak_inds_ip_combined_filtered), str(datetime.now().time())
-												print '  ->', peak_inds_ip_combined_filtered
+											if verbose:
+												print ('- peak inds combined:', len(peak_inds_ip_combined_filtered), str(datetime.now().time()))
+												print ('  ->', peak_inds_ip_combined_filtered)
 
 											# --------------------------------------------------
 											# peak filtering
 											# --------------------------------------------------
 											if len(peak_inds_ip_combined_filtered) != 0:
 												# === t-test: +/- window ===
-												peak_inds_ttest, ind2tp = get_ttest(peak_inds_ip_combined_filtered, cov_array, denoise_winsize * 2, args.test_thresh)
+												peak_inds_ttest, ind2tp = get_ttest(peak_inds_ip_combined_filtered, cov_array, denoise_winsize * 2, test_thresh)
 												param2cp[(denoise_winsize, amp_thresh, peak_min_dist)] = peak_inds_ttest
-												if args.verbose:
-													print '- t-test:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest
+												if verbose:
+													print ('- t-test:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest)
 
 												# === filter #1: enforce peak_min_dist ===
 												to_delete = []
@@ -929,10 +898,11 @@ def main(argv):
 															to_delete.append(ind)
 														else:  # keep the change point with lower t-test p-value
 															to_delete.append(ind) if ind2tp[peak_inds_ttest[ind]] > ind2tp[peak_inds_ttest[ind - 1]] else to_delete.append(ind - 1)
-
+												
+												to_delete = [x for x in to_delete if x < len(peak_inds_ttest)]
 												peak_inds_ttest = np.delete(peak_inds_ttest, to_delete)
-												if args.verbose:
-													print '- filtered by -d:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest
+												if verbose:
+													print ('- filtered by -d:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest)
 
 												# === filter #2: fold change of first bps ===
 												to_delete = []
@@ -944,7 +914,7 @@ def main(argv):
 														prev_mean = np.mean(cov_array[prev_peak:prev_range_end])
 														log2fc = math.log((this_mean + 1) / (prev_mean + 1), 2)
 
-														if abs(log2fc) < math.log(args.fcthresh, 2):
+														if abs(log2fc) < math.log(fcthresh, 2):
 															if ind2tp[peak] > ind2tp[prev_peak]:
 																to_delete.append(peak)
 															else:
@@ -955,31 +925,31 @@ def main(argv):
 													else:
 														prev_peak = peak
 												peak_inds_ttest = np.asarray([x for x in peak_inds_ttest if x not in to_delete])
-												if args.verbose:
-													print '- filtered by fold change of first bps:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest
+												if verbose:
+													print ('- filtered by fold change of first bps:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest)
 
 												# === filter #3: require increasing at 5' end & decreasing at 3' end ===
 												if len(jxn_list) > 0:
-													utr5 = peak_inds_ttest[peak_inds_ttest <= jxn_list[0] + args.juncdist]
-													utr3 = peak_inds_ttest[peak_inds_ttest >= jxn_list[-1] - args.juncdist]
+													utr5 = peak_inds_ttest[peak_inds_ttest <= jxn_list[0] + juncdist]
+													utr3 = peak_inds_ttest[peak_inds_ttest >= jxn_list[-1] - juncdist]
 													peak_inds_ttest = get_end_cov(utr5, utr3, cov_array, peak_inds_ttest)
-													if args.verbose:
-														print '- filtered by 5\'/3\' ends:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest
+													if verbose:
+														print ('- filtered by 5\'/3\' ends:', len(peak_inds_ttest), str(datetime.now().time()), peak_inds_ttest)
 
 												# === filter #4: filter distal ends with low coverage ===
 												to_delete = []
 												peak_inds_ttest_with_ends = [0] + np.asarray(peak_inds_ttest).tolist() + [cov_array.size - 1]  # include ends
-												if args.min_expn_distal != 0:
+												if min_expn_distal != 0:
 													if len(jxn_list) > 0:
-														peak_inds_ttest_tandem_left = [x for x in peak_inds_ttest_with_ends if x <= int(jxn_list[0]) - args.juncdist]
-														peak_inds_ttest_tandem_right = [x for x in peak_inds_ttest_with_ends if x >= int(jxn_list[-1]) + args.juncdist]
+														peak_inds_ttest_tandem_left = [x for x in peak_inds_ttest_with_ends if x <= int(jxn_list[0]) - juncdist]
+														peak_inds_ttest_tandem_right = [x for x in peak_inds_ttest_with_ends if x >= int(jxn_list[-1]) + juncdist]
 
 														# consider change points before the first junction
 														if len(peak_inds_ttest_tandem_left) > 1:
 															for i, ind in enumerate(peak_inds_ttest_tandem_left):
 																next_cut = peak_inds_ttest_with_ends[i + 1]
 																this_mean = round(np.mean(cov_array[ind:next_cut]), 2)
-																if this_mean <= args.min_expn_distal:
+																if this_mean <= min_expn_distal:
 																	to_delete.append(ind)
 
 														# consider change points after the last junction
@@ -987,14 +957,14 @@ def main(argv):
 															for i, ind in enumerate(peak_inds_ttest_tandem_right):
 																prev_cut = peak_inds_ttest_with_ends[peak_inds_ttest_with_ends.index(ind) - 1]
 																prev_mean = round(np.mean(cov_array[prev_cut:ind]), 2)
-																if prev_mean <= args.min_expn_distal:
+																if prev_mean <= min_expn_distal:
 																	to_delete.append(ind)
 
 														for ind in to_delete:
 															peak_inds_ttest_with_ends.remove(ind)
 
-													if args.verbose:
-														print '- filter distal ends with low coverage:', len(peak_inds_ttest_with_ends), peak_inds_ttest_with_ends
+													if verbose:
+														print ('- filter distal ends with low coverage:', len(peak_inds_ttest_with_ends), peak_inds_ttest_with_ends)
 
 												# === filter #5: fold change of whole segments ===
 												to_delete = []
@@ -1020,7 +990,7 @@ def main(argv):
 
 														log2fc = math.log((this_mean + 1) / (prev_mean + 1), 2)
 
-														if abs(log2fc) < math.log(args.fcthresh, 2) and i != 0 and i != len(peak_inds_ttest_with_ends) - 1:
+														if abs(log2fc) < math.log(fcthresh, 2) and i != 0 and i != len(peak_inds_ttest_with_ends) - 1:
 															to_delete.append(i)
 														else:
 															prev_cut = ind
@@ -1052,14 +1022,14 @@ def main(argv):
 												else:
 													count_filter123 += 1
 
-												if args.verbose:
-													print '- fold change whole segment:', len(peak_inds_ttest_with_ends), peak_inds_ttest_with_ends
+												if verbose:
+													print ('- fold change whole segment:', len(peak_inds_ttest_with_ends), peak_inds_ttest_with_ends)
 
 												param2cpopt[(denoise_winsize, amp_thresh, peak_min_dist)] = peak_inds_ttest_with_ends
 												param2fcopt[(denoise_winsize, amp_thresh, peak_min_dist)] = fc_list
-											elif args.verbose:
+											elif verbose:
 												count_no_cps += 1
-												print '  - no change points called'
+												print ('  - no change points called')
 
 											# get total change points for this amp threshold
 											if a not in a2totcp:
@@ -1073,7 +1043,7 @@ def main(argv):
 													# optimal parameters: detect junctions within 50bp
 													jxn_closest = [min(peak_inds_ttest_with_ends, key=lambda x:abs(x - j)) for j in jxn_list]
 													jxn_peak_dif = [abs(j - c) for j, c in zip(jxn_list, jxn_closest)]
-													tot_near_jxns = len([x for x in jxn_peak_dif if x <= args.juncdist])
+													tot_near_jxns = len([x for x in jxn_peak_dif if x <= juncdist])
 													tot_other = len(peak_inds_ttest_with_ends) - tot_near_jxns
 
 													if tot_near_jxns - tot_other > njxns_detected:
@@ -1081,7 +1051,7 @@ def main(argv):
 														denoise_winsize_opt = denoise_winsize
 														amp_thresh_opt = amp_thresh
 														peak_min_dist_opt = peak_min_dist
-													elif args.winsize != -1:
+													elif winsize != -1:
 														njxns_detected = tot_near_jxns - tot_other
 														denoise_winsize_opt = denoise_winsize
 														amp_thresh_opt = amp_thresh
@@ -1095,41 +1065,41 @@ def main(argv):
 														peak_min_dist_opt = peak_min_dist
 											else:
 												count_no_cps_ttest0 += 1
-												if args.verbose:
-													print '  - no change points found: total passing t-test = 0'
+												if verbose:
+													print ('  - no change points found: total passing t-test = 0')
 
 							# --------------------------------------------------
 							# optimal change points
 							# --------------------------------------------------
 							if denoise_winsize_opt == 0 or amp_thresh_opt == 0 or peak_min_dist_opt == 0:
 								count_no_cps_afterfiltering += 1
-								if args.verbose:
-									print '- no change points called', str(datetime.now().time())
+								if verbose:
+									print ('- no change points called', str(datetime.now().time()))
 							else:
 								count_cps_called += 1
-								if args.verbose:
-									print '- optimal parameters: jxns detected', njxns_detected, '/', len(jxn_list), ': window size', denoise_winsize_opt, 'amplitude', amp_thresh_opt, 'min distance', peak_min_dist_opt, str(datetime.now().time())
+								if verbose:
+									print ('- optimal parameters: jxns detected', njxns_detected, '/', len(jxn_list), ': window size', denoise_winsize_opt, 'amplitude', amp_thresh_opt, 'min distance', peak_min_dist_opt, str(datetime.now().time()))
 
 								peak_inds_ttest_opt = param2cpopt[(denoise_winsize_opt, amp_thresh_opt, peak_min_dist_opt)].tolist()
 								peak_inds_ttest_preopt = param2cp[(denoise_winsize_opt, amp_thresh_opt, peak_min_dist_opt)]
 								fc_list_opt = param2fcopt[(denoise_winsize_opt, amp_thresh_opt, peak_min_dist_opt)]
 
 								# === filter low coverage ends ===
-								if args.max_end_ru != 0:
+								if max_end_ru != 0:
 									cov_mean_list = [float(x.split(':')[0]) for x in fc_list_opt]
 									ru_all = [x / max(cov_mean_list) for x in cov_mean_list]
 
-									while ru_all[0] < args.max_end_ru:
-										if args.verbose:
-											print '-> removing left end:', ru_all[0], peak_inds_ttest_opt[0] + new_start
+									while ru_all[0] < max_end_ru:
+										if verbose:
+											print ('-> removing left end:', ru_all[0], peak_inds_ttest_opt[0] + new_start)
 										del ru_all[0]
 										del peak_inds_ttest_opt[0]
 										del fc_list_opt[0]
 
 									if len(ru_all) > 1:
-										while ru_all[-2] < args.max_end_ru:
-											if args.verbose:
-												print '-> removing right end:', ru_all[-1], peak_inds_ttest_opt[-1] + new_start
+										while ru_all[-2] < max_end_ru:
+											if verbose:
+												print ('-> removing right end:', ru_all[-1], peak_inds_ttest_opt[-1] + new_start)
 											del ru_all[-1]
 											del peak_inds_ttest_opt[-1]
 											del fc_list_opt[-1]
@@ -1156,16 +1126,16 @@ def main(argv):
 										exon_start_end_list = [map(int, exon.split(':')) for exon in exon_list]
 										exon_flag_list = [1 if estart <= int(peak_ind) < eend else 0 for estart, eend in exon_start_end_list]
 
-										if any(x <= args.juncdist for x in jxn_distances):
+										if any(x <= juncdist for x in jxn_distances):
 											label = 'Junction'
-										elif int(peak_ind) <= int(jxn_list[0]) - args.juncdist:
+										elif int(peak_ind) <= int(jxn_list[0]) - juncdist:
 											if strand_inferred == '-':
 												label = 'TandemAPA'
 											elif strand_inferred == '+':
 												label = 'TandemATSS'
 											else:
 												label = 'TandemLeft'
-										elif int(peak_ind) >= int(jxn_list[-1]) + args.juncdist:
+										elif int(peak_ind) >= int(jxn_list[-1]) + juncdist:
 											if strand_inferred == '+':
 												label = 'TandemAPA'
 											elif strand_inferred == '-':
@@ -1182,8 +1152,8 @@ def main(argv):
 									label_list.append(label)
 
 									if int(peak_ind) > cov_array.size - 1:
-										print '\ngene:', geneid, start, end, chrom, strand, new_start, new_end, cov_array.size, str(datetime.now().time())
-										print cov_array.size, peak_ind
+										print ('\ngene:', geneid, start, end, chrom, strand, new_start, new_end, cov_array.size, str(datetime.now().time()))
+										print (cov_array.size, peak_ind)
 										sys.exit(1)
 
 									this_gs = geneid.split(':')[0]
@@ -1216,15 +1186,15 @@ def main(argv):
 										o.write('\t'.join([chrom, str(int(this_pos)), str(int(this_pos) + 1), name, fc, strand]) + '\n')
 						else:
 							count_high_ksp += 1
-							if args.verbose:
-								print '- no change points called: KS p =', ksp
+							if verbose:
+								print ('- no change points called: KS p =', ksp)
 
 						# --------------------------------------------------
 						# plots
 						# --------------------------------------------------
-						if args.plot:
-							if args.verbose:
-								print '- plotting'
+						if plot:
+							if verbose:
+								print ('- plotting')
 							# plot coverage without change points
 							x = np.linspace(0, len(cov_array) - 1, len(cov_array)) / 1000
 							y = cov_array
@@ -1316,7 +1286,7 @@ def main(argv):
 								pdf.close()
 								pyplot.close(fig)
 
-							if ksp < args.test_thresh:
+							if ksp < test_thresh:
 								x = np.linspace(0, len(line_dist_array_denoise) - 1, len(line_dist_array_denoise)) / 1000
 								y1 = line_dist_array2_denoise
 								y2 = line_dist_array2
@@ -1365,31 +1335,93 @@ def main(argv):
 						count_min_length_filter += 1
 						if 'novel' not in geneid:
 							count_min_length_filter_annotated += 1
-						if args.verbose:
-							print 'gene length <', args.min_length, '-> skipping'
+						if verbose:
+							print ('gene length <', min_length, '-> skipping')
 
 	o.close()
 
 
-	sort_bedfile(args.output + '.temp', args.output)
-	os.remove(args.output + '.temp')
+	sort_bedfile(output + '.temp', output)
+	os.remove(output + '.temp')
 
-	if args.verbose:
-		print count_genes_with_reads, 'total TUs with reads,', count_genes_with_reads_annotated, 'annotated'
-		print count_min_length_filter, 'total TUs filtered by min TU length >=', args.min_length, '(', count_min_length_filter_annotated, 'annotated),', count_min_length_keep, 'kept'
-		print count_min_expn_filter, 'total TUs filtered by min expression >=', args.min_expn, '(', count_min_expn_filter_annotated, 'annotated), kept', count_min_expn_keep
-		print count_high_ksp, 'total TUs with ksp >=', args.test_thresh
-		print count_vert_sum_max0, 'total TUs filtered by having max CVS = 0'
-		print count_vert2_sum_max0, 'total TUs filtered by having max CVS2 = 0'
-		print count_no_cps_ttest0, 'total TUs filtered by having no cps passing ttest'
-		print count_filter123, 'total filtered by filters 1-3'
-		print count_no_cps_afterfiltering, 'total TUs with no cps after all filters'
-		print count_cps_called, 'total TUs with change points'
+	if verbose:
+		print (count_genes_with_reads, 'total TUs with reads,', count_genes_with_reads_annotated, 'annotated')
+		print (count_min_length_filter, 'total TUs filtered by min TU length >=', min_length, '(', count_min_length_filter_annotated, 'annotated),', count_min_length_keep, 'kept')
+		print (count_min_expn_filter, 'total TUs filtered by min expression >=', min_expn, '(', count_min_expn_filter_annotated, 'annotated), kept', count_min_expn_keep)
+		print (count_high_ksp, 'total TUs with ksp >=', test_thresh)
+		print (count_vert_sum_max0, 'total TUs filtered by having max CVS = 0')
+		print (count_vert2_sum_max0, 'total TUs filtered by having max CVS2 = 0')
+		print (count_no_cps_ttest0, 'total TUs filtered by having no cps passing ttest')
+		print (count_filter123, 'total filtered by filters 1-3')
+		print (count_no_cps_afterfiltering, 'total TUs with no cps after all filters')
+		print (count_cps_called, 'total TUs with change points')
 
 	# === delete temporary files ===
 	os.remove(bgfile)
-	print '\nfinished:', str(datetime.now().time())
+	print ('\nfinished:', str(datetime.now().time()))
 
+
+def main(argv):
+	# --------------------------------------------------
+	# get args
+	# --------------------------------------------------
+	parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+									 description='Identify change points throughout each TU using the cumulative read sum (CRS).')
+	group = parser.add_argument_group('Input')
+	group.add_argument('-i', '--input_bg', dest='input_bg', type=str, metavar='',
+					   help='Bedgraph: non-strand-specific or plus strand.')
+	group.add_argument('-m', '--input_bg_minus', dest='input_bg_minus', type=str, metavar='',
+					   help='Bedgraph, minus strand (strand-specific only).')
+	group.add_argument('-g', '--input_regions', dest='input_regions', type=str, metavar='',
+					   help='Bed file of transcription units.')
+	group.add_argument('-j', '--junc', dest='junc', type=str, metavar='',
+					   help='Bed file of junction read counts.')
+	group.add_argument('-x', '--genome', dest='genome', type=str, metavar='',
+					   help='Genome fasta file.')
+
+	group = parser.add_argument_group('Parameters')
+	group.add_argument('-a', '--peak_thresh', dest='peak_thresh', type=float, default=-1.0, metavar='',
+					   help='Normalized threshold (float between [0., 1.]). Only the peaks with amplitude higher than the threshold will be detected. -1.0 indicates optimizing between [0.01, 0.05, 0.1] for each TU.')
+	group.add_argument('-d', '--peak_min_dist', dest='peak_min_dist', type=int, default=-1, metavar='',
+					   help='Minimum distance between each detected peak. The peak with the highest amplitude is preferred to satisfy this constraint. -1 indicates optimizing between [10, 50] for each TU.')
+	group.add_argument('-w', '--winsize', dest='winsize', type=int, default=-1, metavar='',
+					   help='Window size for de-noising and increasing precision. -1 indicates optimizing between [50, max(100, gene_length / 100) * 2].')
+	group.add_argument('-t', '--test_thresh', dest='test_thresh', type=float, default=0.001, metavar='',
+					   help='Maximum p-value threshold for KS test and t-test.')
+	group.add_argument('-l', '--min_length', dest='min_length', type=int, default=1000, metavar='',
+					   help='Minimum gene length for running mountain climber.')
+	group.add_argument('-e', '--min_expn', dest='min_expn', type=int, default=10, metavar='',
+					   help='Minimum expression level (average # reads per bp)')
+	group.add_argument('-s', '--min_expn_distal', dest='min_expn_distal', type=int, default=1, metavar='',
+					   help='Minimum distal expression level (average # reads per bp).')
+	group.add_argument('-f', '--fcthresh', dest='fcthresh', type=float, default=1.5, metavar='',
+					   help='Minimum fold change.')
+	group.add_argument('-u', '--juncdist', dest='juncdist', type=int, default=10, metavar='',
+					   help='Minimum distance to exon-intron junction.')
+	group.add_argument('-n', '--minjxncount', dest='minjxncount', type=int, default=2, metavar='',
+					   help='Minimum junction read count.')
+	group.add_argument('-z', '--max_end_ru', dest='max_end_ru', type=float, default=0.01, metavar='',
+					   help='Maximum end relative usage = coverage of end / max segment coverage.')
+
+	group = parser.add_argument_group('Output')
+	group.add_argument('-o', '--output', dest='output', type=str, metavar='',
+					   help='Output prefix. Bed file of change points has name field = CPlabel:gene:TUstart:TUend:inferred_strand:winsize:segment_coverage:average_exon_coverage. Score = log2(fold change).')
+	group.add_argument('-p', '--plot', dest='plot', action='store_true',
+					   help='Plot the cumulative read sum (CRS), the distance from CRS to line y=ax, and the coverage with predicted change points.')
+	group.add_argument('-v', '--verbose', dest='verbose', action='store_true',
+					   help='Print progress.')
+	args = parser.parse_args()
+
+	run(
+		input_bg=args.input_bg, input_bg_minus=args.input_bg_minus,
+		input_regions=args.input_regions, output=args.output,
+		genome=args.genome, plot=args.plot, 
+		junc=args.junc, minjxncount=args.minjxncount, juncdist=args.juncdist,
+		min_length=args.min_length, min_expn=args.min_expn, min_expn_distal=args.min_expn.distal,
+		test_thresh=args.test_thresh, winsize=args.winsize, peak_min_dist=args.peak_min_dist,
+		peak_thresh=args.peak_thresh, fcthresh=args.fcthresh, max_end_ru=args.max_end_ru, 
+		verbose=args.verbose, min_segments=args.min_segments
+	)
 
 # boilerplate
 if __name__ == '__main__':

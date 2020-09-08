@@ -35,8 +35,8 @@ def merge_annotation(refgtf, ss, temp_annotbed, temp_annotbed_sort, temp_annotbe
 				gs = [a for a in x[8].split(';') if 'gene_name' in a]
 				tx = [a for a in x[8].split(';') if 'transcript_id' in a]
 				if len(gs) > 1 or len(tx) > 1:
-					print '>1 gene_name or transcript_id found!'
-					print gs, tx
+					print ('>1 gene_name or transcript_id found!')
+					print (gs, tx)
 					sys.exit(1)
 				else:
 					gs = gs[0].replace('gene_name', '').replace('\"', '').replace(' ', '')
@@ -270,7 +270,7 @@ def get_txregion(in_bed_or_gtf, ss):
 		if (chrom, start, end, strand) not in txregions:
 			txregions[(chrom, start, end, strand)] = ':'.join([score, name])
 		else:
-			print 'seen', chrom, start, end, strand
+			print ('seen', chrom, start, end, strand)
 			sys.exit(1)
 	f.close()
 	return txregions
@@ -335,8 +335,8 @@ def update_gtf_bed(refgtf, ss, txregions, out_annot_gtf, out_annot_bed):
 					og.write(line)
 				else:  # get min start & max end if there is more than txregion overlapping this gene
 					if len(overlaps) > 1:
-						min_start = map(min, zip(*overlaps))[0]
-						max_end = map(max, zip(*overlaps))[1]
+						min_start = sorted(overlaps, key=lambda x: x[0])[0][0]
+						max_end = sorted(overlaps, key=lambda x: x[1])[-1][1]
 					else:
 						min_start = overlaps[0][0]
 						max_end = overlaps[0][1]
@@ -388,10 +388,12 @@ def update_gtf_bed(refgtf, ss, txregions, out_annot_gtf, out_annot_bed):
 
 		# reference gtf: add txregion
 		if (chrom, start, end, strand) not in seen_txregion:
+			if chrom == "-1":
+				continue
 			if 'novel' not in name:
-				print 'didn\'t overlap gene when it should have?', chrom, start, end, strand, name_list
-				sys.exit(1)
-
+				print ('didn\'t overlap gene when it should have?', chrom, start, end, strand, name_list)
+				# sys.exit(1)
+	
 			# txregion bed: keep original
 			if strand == '.':
 				ob.write('\t'.join([chrom, str(start - 1), str(end), name, score]) + '\n')
@@ -433,6 +435,60 @@ def update_gtf_bed(refgtf, ss, txregions, out_annot_gtf, out_annot_bed):
 	os.rename(out_annot_bed + '.sorted', out_annot_bed)
 
 
+def merge(infiles, output, refgtf, ss):
+	# --------------------------------------------------
+	# main routine
+	# --------------------------------------------------
+	print ('\njob starting:', str(datetime.now().time()))
+
+	# === I/O ===
+	temp_allbed = output + '.temp.bed'
+	temp_allbed_sorted = output + '.temp.sorted.bed'
+
+	temp_annotbed = output + '.annot.temp'
+	temp_annotbed_sort = temp_annotbed + '.sort'
+	temp_annotbed_merged = temp_annotbed_sort + '.merged'
+	temp_annotbed_merged_sorted = temp_annotbed_sort + '.merged.sort'
+
+	out_intersect = output + '.intersect'
+	out_merge = output + '.preAnnot.bed'
+	out_merge_sort = out_merge + '.sort'
+	out_annot = output + '.annot.bed'
+
+	out_annot_gtf = out_annot.replace('.bed', '') + '.' + os.path.basename(refgtf)
+	out_annot_bed = out_annot_gtf.replace('.gtf', '.bed')
+	out_annot_singleGenes_bed = out_annot_bed.replace('.bed', '_singleGenes.bed')
+
+	# === main ===
+	print ('- merging overlapping gene annotations', str(datetime.now().time()))
+	merge_annotation(refgtf, ss, temp_annotbed, temp_annotbed_sort,
+					 temp_annotbed_merged, temp_annotbed_merged_sorted)
+
+	print ('- annotating TUs & merging those within the same gene', str(datetime.now().time()))
+	annotate_tus(infiles, ss, temp_allbed, temp_allbed_sorted,
+				 temp_annotbed_merged_sorted, out_intersect, out_merge, out_merge_sort, out_annot)
+
+	print ('- updating gtf to include TUs', str(datetime.now().time()))
+	if ss == 'n':
+		print ('  -> NOTE: because data is not strand-specific, we assign + strand for all novel TUs in gtf file.')
+	txregions = get_txregion(out_annot, ss)
+	os.remove(out_annot)
+	update_gtf_bed(refgtf, ss, txregions, out_annot_gtf, out_annot_bed)
+
+	print ('- getting subset of TUs with <= 1 gene', str(datetime.now().time()))
+	o = open(out_annot_singleGenes_bed, 'w')
+	f = open(out_annot_bed, 'r')
+	for line in f:
+		score = line.rstrip().split('\t')[4]
+		if int(score) <= 1:
+			o.write(line)
+	f.close()
+	o.close()
+
+	print ('\nfinished:', str(datetime.now().time()))
+
+
+
 def main(argv):
 	# --------------------------------------------------
 	# get args
@@ -449,56 +505,7 @@ def main(argv):
 						help='Output prefix')
 	args = parser.parse_args()
 
-	# --------------------------------------------------
-	# main routine
-	# --------------------------------------------------
-	print '\njob starting:', str(datetime.now().time())
-
-	# === I/O ===
-	temp_allbed = args.output + '.temp.bed'
-	temp_allbed_sorted = args.output + '.temp.sorted.bed'
-
-	temp_annotbed = args.output + '.annot.temp'
-	temp_annotbed_sort = temp_annotbed + '.sort'
-	temp_annotbed_merged = temp_annotbed_sort + '.merged'
-	temp_annotbed_merged_sorted = temp_annotbed_sort + '.merged.sort'
-
-	out_intersect = args.output + '.intersect'
-	out_merge = args.output + '.preAnnot.bed'
-	out_merge_sort = out_merge + '.sort'
-	out_annot = args.output + '.annot.bed'
-
-	out_annot_gtf = out_annot.replace('.bed', '') + '.' + os.path.basename(args.refgtf)
-	out_annot_bed = out_annot_gtf.replace('.gtf', '.bed')
-	out_annot_singleGenes_bed = out_annot_bed.replace('.bed', '_singleGenes.bed')
-
-	# === main ===
-	print '- merging overlapping gene annotations', str(datetime.now().time())
-	merge_annotation(args.refgtf, args.ss, temp_annotbed, temp_annotbed_sort,
-					 temp_annotbed_merged, temp_annotbed_merged_sorted)
-
-	print '- annotating TUs & merging those within the same gene', str(datetime.now().time())
-	annotate_tus(args.infiles, args.ss, temp_allbed, temp_allbed_sorted,
-				 temp_annotbed_merged_sorted, out_intersect, out_merge, out_merge_sort, out_annot)
-
-	print '- updating gtf to include TUs', str(datetime.now().time())
-	if args.ss == 'n':
-		print '  -> NOTE: because data is not strand-specific, we assign + strand for all novel TUs in gtf file.'
-	txregions = get_txregion(out_annot, args.ss)
-	os.remove(out_annot)
-	update_gtf_bed(args.refgtf, args.ss, txregions, out_annot_gtf, out_annot_bed)
-
-	print '- getting subset of TUs with <= 1 gene', str(datetime.now().time())
-	o = open(out_annot_singleGenes_bed, 'w')
-	f = open(out_annot_bed, 'r')
-	for line in f:
-		score = line.rstrip().split('\t')[4]
-		if int(score) <= 1:
-			o.write(line)
-	f.close()
-	o.close()
-
-	print '\nfinished:', str(datetime.now().time())
+	merge(infiles=args.infiles, output=args.output, refgtf=args.refgtf, ss=args.ss)
 
 
 # boilerplate

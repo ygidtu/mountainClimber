@@ -15,7 +15,10 @@ import numpy as np 					# v1.10.4
 from scipy import stats 			# v0.15.1
 from collections import *
 from datetime import datetime
-from functions import sort_bedfile
+try:
+	from functions import sort_bedfile, run_command
+except ImportError:
+	from src.functions import sort_bedfile, run_command
 
 
 def get_seg2cov(infile, sample, seg2cov):

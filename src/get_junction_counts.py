@@ -64,7 +64,7 @@ def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strande
 						except:	junctions_idme[junction] = [chrm, junc_stt, junc_end, junction, 1, strand]
 
 	for line in junctions_idme.values():
-		outline = map(str, line)
+		outline = [str(x) for x in line]
 		if strnd1 == 'nss':
 			out.write('\t'.join(outline[:-1]) + '\n')
 		else:
@@ -75,7 +75,7 @@ def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strande
 	os.system('cat %s.tmp | sort -k1,1 -k2,2n > %s' %(outfile, outfile))
 	os.system('rm  %s.tmp' %(outfile))
 	# To run separate chromosomes at the time or all at once
-	chrm_number = list(set(zip(*junctions_idme.values())[0]))
+	chrm_number = list(set(list(junctions_idme.values())[0]))
 
 	if len(chrm_number) == 1 : return chrm_number[0], strnd1
 	elif len(chrm_number) > 1: return 'all', strnd1
@@ -144,12 +144,13 @@ def main(argv):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
-	print '\nstarting:', str(datetime.now().time())
+	print ('\nstarting:', str(datetime.now().time()))
 
 	make_intron_bed(args.input_bam, args.output, overhang = args.overhang,
 		min_intron = args.min_intron, max_intron = args.max_intron, strandedness = args.strand)
 
-	print '\nfinished:', str(datetime.now().time())
+	print ('\nfinished:', str(datetime.now().time()))
+
 
 # boilerplate
 if __name__ == '__main__':

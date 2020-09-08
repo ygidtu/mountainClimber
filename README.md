@@ -25,6 +25,9 @@ Dependencies include (version used for development indicated in parentheses):
 - bisect
 - itertools
 
+```bash
+pip install scipy==0.15.1 numpy==1.10.4 peakutils==1.0.3 sklearn==0.18.1 pybedtools==0.6.2
+```
 
 ## Table of contents
 

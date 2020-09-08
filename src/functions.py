@@ -9,7 +9,7 @@ from subprocess import Popen, PIPE
 def run_command(cmd, stdin=0, stdoutfile=0, printflag=1):
 	"""run a subprocess"""
 	if printflag == 1:
-		print ' '.join(cmd)
+		print (' '.join(cmd))
 	if stdin == 0 and stdoutfile == 0:
 		p = Popen(cmd, stdout=PIPE, stderr=PIPE)
 		stdout, stderr = p.communicate()
@@ -18,7 +18,7 @@ def run_command(cmd, stdin=0, stdoutfile=0, printflag=1):
 		stdout, stderr = p.communicate(stdin)
 	else:
 		p = Popen(cmd, stdout=stdoutfile, stderr=PIPE)
-		pcode = p.wait()
+		p.wait()
 		stdoutfile.flush()
 		stdout = 'NA'
 		stderr = 'NA'
@@ -42,6 +42,6 @@ def sort_bedfile(infile, outfile):
 	o = open(outfile, 'w')
 	o.write('track name=\"' + os.path.basename(infile).replace('.bed', '') + '\"\n')
 	cmd = ['sort', '-k1,1', '-k2,2n', infile]
-	stdout, stderr = run_command(cmd)
-	o.write(stdout)
+	stdout, _ = run_command(cmd)
+	o.write(stdout.decode("utf-8"))
 	o.close()

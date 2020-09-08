@@ -10,7 +10,11 @@ import numpy as np  # v1.10.4
 from scipy import stats  # v0.15.1
 from collections import *
 from datetime import datetime
-from functions import run_command, sort_bedfile
+
+try:
+	from functions import sort_bedfile, run_command
+except ImportError:
+	from src.functions import sort_bedfile, run_command
 
 
 def calculate_relative_usage(seg2covlist, n):
@@ -88,33 +92,19 @@ def relabel_seg(seg, strand, side):
 	return(seg)
 
 
-def main(argv):
-	# --------------------------------------------------
-	# get args
-	# --------------------------------------------------
-	parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, description='Calculate the relative usage of each TSS and poly(A) site in each TU. Run this separately for each condition.')
-	group = parser.add_argument_group('input')
-	group.add_argument('-i', '--input', dest='input', type=str, metavar='', help='Bed file of change points.')
-	group = parser.add_argument_group('Parameters')
-	group.add_argument('-n', '--min_segments', dest='min_segments', type=int, default=3, metavar='', help='Minimum number of segments required in the TU to calculate relative end usage.')
-	group = parser.add_argument_group('output')
-	group.add_argument('-o', '--output', dest='output', type=str, help='Output bed filename. Bed name field = CPlabel:gene:TUstart:TUend:inferred_strand:chromosome:segmentCoverage:CPindex')
-	group.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Print progress')
-	args = parser.parse_args()
-	print args
-
+def run(input_file, output, min_segments, verbose):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
-	print '\njob starting:', str(datetime.now().time())
+	print ('\njob starting:', str(datetime.now().time()))
 
 	# === get coverage for each end segment ===
 	seg2cov = {}
 	gene2cps = defaultdict(list)
 	gene2segs = defaultdict(list)
-	sample = os.path.basename(args.input)
+	sample = os.path.basename(input_file)
 	samples = [sample]
-	with open(args.input, 'r') as f:
+	with open(input_file, 'r') as f:
 		for line in f:
 			if not line.startswith('track'):
 				x = line.rstrip().split('\t')
@@ -131,7 +121,7 @@ def main(argv):
 			name_list = name.split(':')
 			cplabel = name_list[0]
 			ind_max = len(gene2segs[gene]) - 1
-			condition = name_list[-1] if len(args.input) > 1 else 'NA'
+			condition = name_list[-1] if len(input_file) > 1 else 'NA'
 
 			if i > 0:
 				cov_mean = prev_cov_mean
@@ -145,26 +135,26 @@ def main(argv):
 			prev_cpstart = cpstart
 			prev_cpend = cpend
 			prev_cplabel = cplabel
-			if len(args.input) > 1:
+			if len(input_file) > 1:
 				prev_condition = condition
 
-	o3 = open(args.output, 'w')
+	o3 = open(output, 'w')
 
 	for gene in gene2cps:
 		gs, gstart, gend, strand_inferred, chrom = gene.split(':')
 		gene2cps_tuple = gene2cps[gene]
 		cov_mean_list, start_list, end_list, cplabel_list, ind_list, ind_max_list = zip(*gene2cps_tuple)
-		nsamples = len(args.input)
-		if args.verbose:
-			print 'gene', gene, ind_max_list[0]
-			print 'cov', cov_mean_list
-			print 'starts', start_list
-			print 'ends', end_list
-			print 'cplabels', cplabel_list
-			print 'inds', ind_list
+		nsamples = len(input_file)
+		if verbose:
+			print ('gene', gene, ind_max_list[0])
+			print ('cov', cov_mean_list)
+			print ('starts', start_list)
+			print ('ends', end_list)
+			print ('cplabels', cplabel_list)
+			print ('inds', ind_list)
 
 		# if len(cplabel_list) >= 3:
-		if len(cplabel_list) > args.min_segments:
+		if len(cplabel_list) > min_segments:
 			# === get indices for left & right ends: 1st & last exon ===
 			cplabel_list_left = [x.split('|')[0] for x in cplabel_list]
 			cplabel_list_right = [x.split('|')[1] for x in cplabel_list]
@@ -177,8 +167,8 @@ def main(argv):
 			else:  # introns present but no junctions detected --> introns are likely either short or retained. just keep first & last change point
 				first_jxn_ind = 1
 				last_jxn_ind = len(cov_mean_list) - 2
-			if args.verbose:
-				print 'jxn inds:', first_jxn_ind, last_jxn_ind
+			if verbose:
+				print ('jxn inds:', first_jxn_ind, last_jxn_ind)
 
 			indices_left = [i for i, x in enumerate(cplabel_list) if i < first_jxn_ind or ind_list[i] == '1' or 'Left' in x or ('TSS' in x and strand_inferred == '+') or ('APA' in x and strand_inferred == '-') or ('PolyA' in x and strand_inferred == '-')]
 			indices_right = [i for i, x in enumerate(cplabel_list) if i > last_jxn_ind or ind_list[i] == ind_max_list[i] or 'Right' in x or ('TSS' in x and strand_inferred == '-') or ('APA' in x and strand_inferred == '+') or ('PolyA' in x and strand_inferred == '+')]
@@ -218,15 +208,15 @@ def main(argv):
 		if len(segs_left) != len(segs_left_temp) or len(segs_right) != len(segs_right_temp):
 			sys.stderr.write('WARNING: removed ambiguous segments that could have been assigned to either end\n')
 
-		if args.verbose:
-			print 'segs_left_temp', segs_left_temp
-			print 'segs_right_temp', segs_right_temp
-			print 'segs_left', segs_left
-			print 'segs_right', segs_right
+		if verbose:
+			print ('segs_left_temp', segs_left_temp)
+			print ('segs_right_temp', segs_right_temp)
+			print ('segs_left', segs_left)
+			print ('segs_right', segs_right)
 
 		# === calculate pi and write output ===
 		if len(segs_left) == 0:
-			print 'NO LEFT SEG?'
+			print ('NO LEFT SEG?')
 			sys.exit(1)
 		elif len(segs_left) == 1:
 			ind = 'L0'
@@ -248,8 +238,8 @@ def main(argv):
 						seg_left2covlist[i] = covlist
 
 			ru = calculate_relative_usage(seg_left2covlist, len(samples))
-			if args.verbose:
-				print 'ru left', ru
+			if verbose:
+				print ('ru left', ru)
 
 			segs_left_nonzeroRU = [x for i, x in enumerate(segs_left) if ru[i] != 0]
 			nonzeroRU = [x for x in ru if x != 0]
@@ -259,7 +249,7 @@ def main(argv):
 				write_output_cp_left(o3, gene, this_seg, n=nsamples, ind=ind, ru=nonzeroRU[i])
 
 		if len(segs_right) == 0:
-			print 'NO RIGHT SEG?'
+			print ('NO RIGHT SEG?')
 			sys.exit(1)
 		elif len(segs_right) == 1:
 			ind = 'R0'
@@ -282,8 +272,8 @@ def main(argv):
 
 			ru = calculate_relative_usage(seg_right2covlist, len(samples))
 			ru = ru[::-1]  # reverse: proximal -> distal order
-			if args.verbose:
-				print 'ru right', ru
+			if verbose:
+				print ('ru right', ru)
 
 			segs_right_nonzeroRU = [x for i, x in enumerate(segs_right) if ru[i] != 0]
 			nonzeroRU = [x for x in ru if x != 0]
@@ -293,10 +283,28 @@ def main(argv):
 				write_output_cp_right(o3, gene, this_seg, n=nsamples, ind=ind, ru=nonzeroRU[i])
 	o3.close()
 
-	sort_bedfile(infile=args.output, outfile=args.output + '.sorted')
-	os.rename(args.output + '.sorted', args.output)
+	sort_bedfile(infile=output, outfile=output + '.sorted')
+	os.rename(output + '.sorted', output)
 
-	print 'finished:', str(datetime.now().time())
+	print ('finished:', str(datetime.now().time()))
+
+
+def main(argv):
+	# --------------------------------------------------
+	# get args
+	# --------------------------------------------------
+	parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, description='Calculate the relative usage of each TSS and poly(A) site in each TU. Run this separately for each condition.')
+	group = parser.add_argument_group('input')
+	group.add_argument('-i', '--input', dest='input', type=str, metavar='', help='Bed file of change points.')
+	group = parser.add_argument_group('Parameters')
+	group.add_argument('-n', '--min_segments', dest='min_segments', type=int, default=3, metavar='', help='Minimum number of segments required in the TU to calculate relative end usage.')
+	group = parser.add_argument_group('output')
+	group.add_argument('-o', '--output', dest='output', type=str, help='Output bed filename. Bed name field = CPlabel:gene:TUstart:TUend:inferred_strand:chromosome:segmentCoverage:CPindex')
+	group.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Print progress')
+	args = parser.parse_args()
+	print (args)
+
+	run(input_file=args.input, output=args.output, min_segments=args.min_segments, verbose=args.verbose)
 
 
 # boilerplate

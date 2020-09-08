@@ -1,0 +1,8 @@
+tests/*
+testset/*
+*.sizes
+res/*
+Dockerfile
+*.tar.gz
+RSEM-*
+__pycache__

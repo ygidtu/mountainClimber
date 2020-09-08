@@ -11,7 +11,10 @@ import numpy as np 					# v1.10.4
 from collections import defaultdict
 from datetime import datetime
 import functions
-from functions import run_command
+try:
+	from functions import sort_bedfile, run_command
+except ImportError:
+	from src.functions import sort_bedfile, run_command
 import pybedtools as pb
 
 
