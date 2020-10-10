@@ -1,14 +1,10 @@
 #!/user/bin/python -tt
 
 import os
-import re
 import sys
-import glob
-import math
 import argparse
 import numpy as np  # v1.10.4
-from scipy import stats  # v0.15.1
-from collections import *
+from collections import defaultdict
 from datetime import datetime
 
 try:
@@ -115,6 +111,8 @@ def run(input_file, output, min_segments, verbose):
 				gene = ':'.join(name.split(':')[1:5] + [chrom])
 				gene2segs[gene].append((chrom, cpstart, cpend, name))
 
+	# @2020.10.10 by Zhang Yiming - init variables
+	prev_cov_mean, prev_cpstart, prev_cpend, prev_cplabel = 0, 0, 0, ""
 	for gene in gene2segs:
 		gs, gstart, gend, strand_inferred, chrom = gene.split(':')
 		for i, (chrom, cpstart, cpend, name) in enumerate(gene2segs[gene]):

@@ -17,6 +17,7 @@ import math
 import pybedtools as pb
 from datetime import datetime
 from collections import defaultdict
+from loguru import logger
 
 try:
 	from functions import sort_bedfile, run_command
@@ -37,18 +38,18 @@ def window_count(bedgraph, window_size):
 	chr2starts = defaultdict(list)
 	chr2ends = defaultdict(list)
 
-	f = gzip.open(bedgraph, 'rb') if re.search(r'\.gz$', bedgraph) else open(bedgraph, 'r')
+	f = gzip.open(bedgraph, 'rt') if re.search(r'\.gz$', bedgraph) else open(bedgraph, 'r')
 
 	# get coverage & length for each window
-	last_chrom = -1
-	last_start = -1
-	last_end = -1
+	last_chrom, last_start, last_end = -1, -1, -1
+	chrom, end = "", -1    # @2020.10.10 by Zhang yiming - init variables
+
 	for line in f:
 		if not line.startswith('track') and not line.startswith('browser'):
 			x = line.rstrip().split('\t')
 			if len(x) != 4:
-				sys.stderr.write('EXIT: do not recognize format! Please input bedgraph (4 fields)\n')
-				sys.stderr.write(x)
+				logger.error('EXIT: do not recognize format! Please input bedgraph (4 fields)\n')
+				logger.error('\t'.join(x))
 				sys.exit(1)
 			(chrom, start, end, count) = x
 			start = int(start)
@@ -59,14 +60,14 @@ def window_count(bedgraph, window_size):
 				# === get continuous regions of coverage ===
 				if last_start == -1:  # first start
 					chr2starts[chrom].append(start)
-				elif prev_chrom == chrom:
+				elif last_chrom == chrom:      # @2020.10.10 by Zhang Yiming - the name of this variable should be last_chrom
 					if last_end != start:  # new block in same chrom
 						chr2starts[chrom].append(start)
 						chr2ends[chrom].append(last_end)
 				else:  # new chrom
 					chr2starts[chrom].append(start)
-					chr2ends[prev_chrom].append(last_end)
-				prev_chrom = chrom
+					chr2ends[last_chrom].append(last_end)
+				last_chrom = chrom
 				last_start = start
 				last_end = end
 
@@ -113,7 +114,8 @@ def window_count(bedgraph, window_size):
 							(prev_count, prev_length, prev_start, prev_end) = window2count_length[(chrom, window_start, window_end)]
 							window2count_length[(chrom, window_start, window_end)] = (prev_count + total_count, prev_length + length, min(prev_start, this_start), max(prev_end, this_end))
 	f.close()
-	chr2ends[chrom].append(end)  # last end
+	if chrom != "" and end >= 0:
+		chr2ends[chrom].append(end)  # last end
 	return window2count_length, chr2starts, chr2ends
 
 
@@ -143,7 +145,7 @@ def merge_windows(window2count_length, min_percent, min_reads, bedgraph, outfile
 	t.close()
 
 	if count_windows_filtered == 0:
-		sys.stderr.write(' '.join(map(str, ['  -> No windows met criteria: >=', min_reads, 'reads/bp and >=', min_percent, "% bp covered"])) + '\n')
+		logger.error(' '.join(map(str, ['  -> No windows met criteria: >=', min_reads, 'reads/bp and >=', min_percent, "% bp covered"])) + '\n')
 		return 0
 	else:
 		outfile_merged = outfile_temp_windows + '.merge'
@@ -204,6 +206,7 @@ def merge_windows(window2count_length, min_percent, min_reads, bedgraph, outfile
 
 def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, min_reads, window_size):
 	# === calculate window read counts. incorporate introns if --junc provided. ===
+	gc_strand, outfile_temp_unionbg = ".", None  # @2020.10.10 by Zhang yiming - init variable
 	if junc:
 		if re.search(r'\.bed$', junc):
 			print('- converting junction .bed file to .bedgraph', str(datetime.now().time()))
@@ -266,7 +269,7 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 		elif re.search(r'\.bedgraph$', junc):
 			outfile_temp_jxn_bg = junc
 		else:
-			sys.stderr.write('EXIT: File extension not recognized. Please input .bed or .bedgraph --junc file')
+			logger.error('EXIT: File extension not recognized. Please input .bed or .bedgraph --junc file')
 			sys.exit(1)
 
 		# combine bedgraphs: using subprocess because pybedtools complains about unionbedg format not being bed
@@ -293,7 +296,7 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 		print('- calculating window read counts:', str(datetime.now().time()))
 		window2count_length, chr2starts, chr2ends = window_count(outfile_temp_merge_bg_jxn, window_size)
 	else:
-		sys.stderr.write('No --junc file was input. It is recommended to include this input.')
+		logger.error('No --junc file was input. It is recommended to include this input.')
 
 		print('- calculating window read counts:', str(datetime.now().time()))
 		window2count_length, chr2starts, chr2ends = window_count(bedgraph, window_size)
@@ -345,7 +348,8 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 	# === clean up ===
 	os.remove(outfile_temp_windows)
 	if junc:
-		os.remove(outfile_temp_unionbg)
+		if outfile_temp_unionbg:
+			os.remove(outfile_temp_unionbg)
 		os.remove(outfile_temp_merge_bg_jxn)
 
 	print('\nfinished: ' + str(datetime.now().time()))
@@ -388,11 +392,11 @@ def main(argv):
 	print('\njob starting:', str(datetime.now().time()))
 
 	if not args.output:
-		sys.stderr.write('EXIT: please enter --output')
+		logger.error('EXIT: please enter --output')
 		sys.exit(1)
 
 	if not args.bedgraph:
-		sys.stderr.write('EXIT: please enter --bedgraph')
+		logger.error('EXIT: please enter --bedgraph')
 		sys.exit(1)
 
 	# === calculate window read counts. incorporate introns if --junc provided. ===

@@ -7,11 +7,18 @@ Cluster change first first across replicates within each condition, and then acr
 import os
 import sys
 import argparse
+
 import numpy as np 					# v1.10.4
-import pybedtools as pb
 from collections import defaultdict
 from datetime import datetime
+from loguru import logger
 from sklearn.cluster import DBSCAN 	# v0.18.1
+
+try:
+	from functions import sort_bedfile
+except ImportError:
+	from src.functions import sort_bedfile
+
 
 
 label2priority = {
@@ -70,7 +77,7 @@ def read_infile(infile, gene2cp, cond, min_fc, min_expn, verbose_flag, lm_flag):
 					count_total += 1
 
 	if verbose_flag:
-		print count_fc_skipped, '/', count_total, round(float(count_fc_skipped) / float(count_total) * 100), ' % skipped with fold change <=', min_fc, infile
+		logger.info(count_fc_skipped, '/', count_total, round(float(count_fc_skipped) / float(count_total) * 100), ' % skipped with fold change <=', min_fc, infile)
 	return gene2cp
 
 
@@ -79,7 +86,7 @@ def run_dbscan(w, minpts, cps, labels, infiles, conds):
 	Run DBSCAN on cps with eps=w and min_samples=minpts.
 	Return the change points, chang epoint labels, and condition labels for each cluster
 	"""
-	dbscan = DBSCAN(eps=w, min_samples=minpts).fit_predict(np.asarray(cps).reshape(-1, 1))
+	dbscan = DBSCAN(eps=w, min_samples=minpts).fit_predict(np.array(cps).reshape(-1, 1))
 
 	# get change points in each cluster
 	db2cps = defaultdict(list)
@@ -116,17 +123,17 @@ def run_dbscan(w, minpts, cps, labels, infiles, conds):
 	return db2cps, db2labels, db2conds, db2condLabel
 
 
-def dbscan_each_condition(gene2cp, eps, minpts, ngene2cond_clustered, cond, ss_flag, outfile_cp=0):
+def dbscan_each_condition(gene2cp, eps, minpts, ngene2cond_clustered, cond, ss_flag, outfile_cp=None):
 	"""
 	Run DBSCAN on samples within one condition.
 	"""
-	if outfile_cp:
-		o = open(outfile_cp, 'w')
+
+	o = open(outfile_cp, "w") if outfile_cp else sys.stdout
 
 	total_genes = 0
 	for gene in gene2cp:
 		if len(gene2cp[gene]) > 0:  # gene may not be expressed in this condition
-			cps, labels, ws, infiles, conds = zip(*sorted(gene2cp[gene]))
+			cps, labels, ws, infiles, conds = zip(*sorted(gene2cp[gene]))    # the gene2cp contains list of different elements, and * will seperate each into variables as list
 			if len(cps) == 0:
 				continue
 
@@ -137,13 +144,11 @@ def dbscan_each_condition(gene2cp, eps, minpts, ngene2cond_clustered, cond, ss_f
 			# write output
 			if len(db2cps.keys()) > 0:
 				if outfile_cp != 0:  # clustering diff_cluster output -> do not output
-					cp_med_list, cp_med2label = write_cp(gene, w, db2cps, db2labels, db2condLabel, o, ss_flag)
+					_, _ = write_cp(gene, w, db2cps, db2labels, db2condLabel, o, ss_flag)  # cp_med_list, cp_med2label
 				total_genes += 1
 				ngene2cond_clustered[gene].append(cond)
 
-	if outfile_cp != 0:
-		o.close()
-
+	o.close()
 	return ngene2cond_clustered, total_genes
 
 
@@ -172,7 +177,7 @@ def dbscan_across_conditions(cond2cpfile, cond2gene2cp_all, ngene2cond_clustered
 
 			# filter change points that did not meet args.minpts cutoff in min_conditions total conditions
 			db_delete = []
-			for d, db in enumerate(db2cps.keys()):
+			for db in db2cps.keys():
 				conds_unique = list(set(db2conds[db]))
 				if len(conds_unique) == 1:
 					cond = conds_unique[0]
@@ -219,8 +224,8 @@ def write_cp(gene, w, db2cps, db2label, db2condLabel, o, ss_flag):
 		cp_med = int(np.median(db2cps[db]))
 		cp_med_list.append(cp_med)
 		cp_std = round(np.std(db2cps[db]), 2)
-		labels = sorted(list(set(db2label[db])))
-		label = ','.join(sorted(list(set(db2label[db]))))
+		labels = [str(x) for x in sorted(list(set(db2label[db])))]  # add str convertion
+		label = ','.join([str(x) for x in sorted(list(set(db2label[db])))])  # add str convertion
 		condLabel = db2condLabel[db]
 
 		label_priorities = [label2priority[x] for x in labels]
@@ -269,6 +274,102 @@ def write_seg(gene, w, cp_med_list, cp_med2label, t, ss_flag):
 						[label_prioritized, condLabel]) + ':' + out_gene + ':' + str(w), i])) + '\n')
 
 
+def cluster(input_file, output, conditions, min_conditions, minpts, min_fc, min_expn, lm_flag, eps, ss_flag, verbose=False):
+	# --------------------------------------------------
+	# main routine
+	# --------------------------------------------------
+
+	# === I/O ===
+	outfile_cp = output + '_cp.bed'
+	outfile_seg = output + '_segments.bed'
+	outfile_summary = output + '_cluster_totals.txt'
+
+	# === get the input files for each condition ===
+	cond2cpfile = defaultdict(list)
+	cond2minpts = {}
+	for c, cond in enumerate(conditions):
+		cond2cpfile[cond].append(input_file[c])
+		if cond not in cond2minpts:
+			cond2minpts[cond] = minpts[c]
+		elif cond2minpts[cond] != minpts[c]:
+			sys.stderr.write(' '.join(map(str, ['EXIT: 2 different minpts provided for', cond, ':', minpts[c], cond2minpts[cond]])) + '\n')
+			sys.exit(1)
+
+	# === (1) filter change points by fold change, (2) filter TUs by reproducibility ===
+	logger.info('reading input change point files', str(datetime.now().time()))
+	cond2gene2cp_all = {}
+	cond2nGenes = {}
+	cond2nGenesFiltered = {}
+	for cond in sorted(cond2cpfile.keys()):
+		logger.info(f'{cond} {datetime.now().time()}')
+
+		# === get all change points with >= min_fc ===
+		gene2cp = defaultdict(list)
+		for cpfile in cond2cpfile[cond]:
+			gene2cp = read_infile(cpfile, gene2cp, cond, min_fc, min_expn, verbose, lm_flag)
+		cond2nGenes[cond] = len(gene2cp.keys())  # count total genes
+		if verbose:
+			logger.info(f' -> total genes: {len(gene2cp.keys())}')
+
+		# === all genes across all conditions ===
+		cond2gene2cp_all[cond] = defaultdict(list)
+		for gene in gene2cp:
+			cond2gene2cp_all[cond][gene].extend(gene2cp[gene])
+
+	# === DBSCAN ===
+	logger.info(f'DBSCAN: in each condition {str(datetime.now().time())}')
+	cond2ngenes_eachCondition = {}
+	ngene2cond_clustered = defaultdict(list)
+	for cond in sorted(cond2cpfile.keys()):
+		logger.info(f'{cond} {str(datetime.now().time())}')
+		if len(cond2cpfile.keys()) == 1:  # only one condition -> logger.info output bed file
+			ngene2cond_clustered, total_genes = dbscan_each_condition(
+				cond2gene2cp_all[cond], eps, cond2minpts[cond], 
+				ngene2cond_clustered, cond, ss_flag, outfile_cp=outfile_cp
+			)
+		else:  # >1 conditions -> write condition-specific outputs separately
+			outfile_cp_cond = output + '_cp_' + cond + '.bed'
+			ngene2cond_clustered, total_genes = dbscan_each_condition(
+				cond2gene2cp_all[cond], eps, 
+				cond2minpts[cond], ngene2cond_clustered, 
+				cond, ss_flag, outfile_cp=outfile_cp_cond
+			)
+
+		cond2ngenes_eachCondition[cond] = total_genes
+
+	# === dbscan across conditions: keep outliers ===
+	logger.info(f'DBSCAN: across conditions {str(datetime.now().time())}')
+	if len(cond2cpfile.keys()) > 1:
+		cond2gene_clustered = dbscan_across_conditions(
+			cond2cpfile, cond2gene2cp_all, ngene2cond_clustered, 
+			min_conditions, eps, cond2minpts,
+			ss_flag, outfile_cp=outfile_cp, outfile_seg=outfile_seg
+		)
+
+		# === logger.info totals across conditions ===
+		o = open(outfile_summary, 'w')
+		o.write('\t'.join(['Condition', 'Total Samples', 'DBSCAN minPts', 'Total Genes',
+			'Total genes clustered per condition', 'Total genes clustered across conditions']) + '\n')
+		for cond in cond2nGenes:
+			if cond not in cond2gene_clustered:
+				cond2gene_clustered[cond] = 'NA'
+			o.write('\t'.join(map(str, [cond, len(cond2cpfile[cond]), cond2minpts[cond], cond2nGenes[cond], cond2ngenes_eachCondition[cond], cond2gene_clustered[cond]])) + '\n')
+		o.close()
+	else:
+		logger.info('  -> only one condition found')
+
+		# === logger.info totals across conditions ===
+		o = open(outfile_summary, 'w')
+		o.write('\t'.join(['Condition', 'Total Samples', 'DBSCAN minPts', 'Total Genes',
+			'Total genes clustered per condition']) + '\n')
+		for cond in cond2nGenes:
+			o.write('\t'.join(map(str, [cond, len(cond2cpfile[cond]), cond2minpts[cond], cond2nGenes[cond], cond2ngenes_eachCondition[cond]])) + '\n')
+		o.close()
+
+	# === sort output ===
+	sort_bedfile(outfile_cp, outfile_cp, add_header = False)  # @2020.10.10 by Zhang Yiming - remove requirement of pybedtools, using linux sort to keep consistency
+
+
 def main(argv):
 	# --------------------------------------------------
 	# get args
@@ -303,121 +404,38 @@ def main(argv):
 	group.add_argument('-o', '--output', dest='output', type=str, metavar = '',
 		help='Output prefix. Output files include _cluster_totals.txt, _segments.bed, _cp.bed, and one _cp.bed file for each condition. _cp.bed name field = label_prioritized;condition_labels:gene:TUstart:TUend:chrom:strand:dbscan_epsilon:min_clustered_change_point:max_clustered_change_point:cluster_standard_deviation:total_clusters. _segments.bed name field = label_prioritized_cp1;condition_labels_cp1|label_prioritized_cp2;condition_labels_cp2:gene:TUstart:TUend:chrom:strand:dbscan_epsilon.')
 	group.add_argument('-v', '--verbose', dest='verbose', action='store_true',
-		help='Print progress details.')
+		help='logger.info progress details.')
 	args = parser.parse_args()
 
 	if args.verbose:
-		print args
-
-	# --------------------------------------------------
-	# main routine
-	# --------------------------------------------------
-	print '\njob starting:', str(datetime.now().time())
+		logger.info(args)
+	logger.info(f'job starting: {datetime.now().time()}')
 
 	if not args.input:
-		sys.stderr.write('EXIT: Please provide --input')
+		logger.error('EXIT: Please provide --input')
 		sys.exit(1)
 
 	if not args.output:
-		sys.stderr.write('EXIT: Please provide --output')
+		logger.error('EXIT: Please provide --output')
 		sys.exit(1)
 
 	if not args.minpts:
-		sys.stderr.write('WARNING: no minpts provided: setting equal to 1\n')
+		logger.warning('WARNING: no minpts provided: setting equal to 1')
 		args.minpts = [1] * len(args.conditions)
 
 	if len(args.input) != len(args.conditions) or len(args.input) != len(args.minpts):
-		sys.stderr.write(' '.join(map(str, ['EXIT: number of samples don\'t match!:',
+		logger.error(' '.join(map(str, ['EXIT: number of samples don\'t match!:',
 			len(args.input), 'input,', len(args.conditions), 'conditions,', len(args.minpts), 'minpts'])) + '\n')
 		sys.exit(1)
 
-	# === I/O ===
-	outfile_cp = args.output + '_cp.bed'
-	outfile_seg = args.output + '_segments.bed'
-	outfile_summary = args.output + '_cluster_totals.txt'
-
-	# === get the input files for each condition ===
-	cond2cpfile = defaultdict(list)
-	cond2minpts = {}
-	for c, cond in enumerate(args.conditions):
-		cond2cpfile[cond].append(args.input[c])
-		if cond not in cond2minpts:
-			cond2minpts[cond] = args.minpts[c]
-		elif cond2minpts[cond] != args.minpts[c]:
-			sys.stderr.write(' '.join(map(str, ['EXIT: 2 different minpts provided for', cond, ':', args.minpts[c], cond2minpts[cond]])) + '\n')
-			sys.exit(1)
-
-	# === (1) filter change points by fold change, (2) filter TUs by reproducibility ===
-	print '- reading input change point files', str(datetime.now().time())
-	cond2gene2cp_all = {}
-	cond2nGenes = {}
-	cond2nGenesFiltered = {}
-	for cond in sorted(cond2cpfile.keys()):
-		print '  -', cond, str(datetime.now().time())
-
-		# === get all change points with >= min_fc ===
-		gene2cp = defaultdict(list)
-		for cpfile in cond2cpfile[cond]:
-			gene2cp = read_infile(cpfile, gene2cp, cond, args.min_fc,
-				args.min_expn, args.verbose, args.lm_flag)
-		cond2nGenes[cond] = len(gene2cp.keys())  # count total genes
-		if args.verbose:
-			print ' -> total genes:', len(gene2cp.keys())
-
-		# === all genes across all conditions ===
-		cond2gene2cp_all[cond] = defaultdict(list)
-		for gene in gene2cp:
-			cond2gene2cp_all[cond][gene].extend(gene2cp[gene])
-
-	# === DBSCAN ===
-	print '- DBSCAN: in each condition', str(datetime.now().time())
-	cond2ngenes_eachCondition = {}
-	ngene2cond_clustered = defaultdict(list)
-	for cond in sorted(cond2cpfile.keys()):
-		print '  -', cond, str(datetime.now().time())
-		if len(cond2cpfile.keys()) == 1:  # only one condition -> print output bed file
-			ngene2cond_clustered, total_genes = dbscan_each_condition(cond2gene2cp_all[cond],
-				args.eps, cond2minpts[cond], ngene2cond_clustered, cond, args.ss_flag,
-				outfile_cp=outfile_cp)
-		else:  # >1 conditions -> write condition-specific outputs separately
-			outfile_cp_cond = args.output + '_cp_' + cond + '.bed'
-			ngene2cond_clustered, total_genes = dbscan_each_condition(cond2gene2cp_all[cond],
-				args.eps, cond2minpts[cond], ngene2cond_clustered, cond, args.ss_flag,
-				outfile_cp=outfile_cp_cond)
-
-		cond2ngenes_eachCondition[cond] = total_genes
-
-	# === dbscan across conditions: keep outliers ===
-	print '- DBSCAN: across conditions', str(datetime.now().time())
-	if len(cond2cpfile.keys()) > 1:
-		cond2gene_clustered = dbscan_across_conditions(cond2cpfile, cond2gene2cp_all,
-			ngene2cond_clustered, args.min_conditions, args.eps, cond2minpts,
-			args.ss_flag, outfile_cp=outfile_cp, outfile_seg=outfile_seg)
-
-		# === print totals across conditions ===
-		o = open(outfile_summary, 'w')
-		o.write('\t'.join(['Condition', 'Total Samples', 'DBSCAN minPts', 'Total Genes',
-			'Total genes clustered per condition', 'Total genes clustered across conditions']) + '\n')
-		for cond in cond2nGenes:
-			if cond not in cond2gene_clustered:
-				cond2gene_clustered[cond] = 'NA'
-			o.write('\t'.join(map(str, [cond, len(cond2cpfile[cond]), cond2minpts[cond], cond2nGenes[cond], cond2ngenes_eachCondition[cond], cond2gene_clustered[cond]])) + '\n')
-		o.close()
-	else:
-		print '  -> only one condition found'
-
-		# === print totals across conditions ===
-		o = open(outfile_summary, 'w')
-		o.write('\t'.join(['Condition', 'Total Samples', 'DBSCAN minPts', 'Total Genes',
-			'Total genes clustered per condition']) + '\n')
-		for cond in cond2nGenes:
-			o.write('\t'.join(map(str, [cond, len(cond2cpfile[cond]), cond2minpts[cond], cond2nGenes[cond], cond2ngenes_eachCondition[cond]])) + '\n')
-		o.close()
-
-	# === sort output ===
-	pb.BedTool(outfile_cp).sort().saveas(outfile_cp + '.sorted')
-	os.rename(outfile_cp + '.sorted', outfile_cp)
-	print '\nfinished:', str(datetime.now().time())
+	cluster(
+		input_file=args.input, output=args.output, 
+		conditions=args.conditions, min_conditions=args.min_conditions, 
+		minpts=args.minpts, min_fc=args.min_fc, min_expn=args.min_expn, 
+		lm_flag=args.lm_flag, eps=args.eps, ss_flag=args.ss_flag, 
+		verbose=args.verbose
+	)
+	logger.info(f'finished: {str(datetime.now().time())}')
 
 
 # boilerplate

@@ -201,6 +201,8 @@ def annotate_tus(infiles, ss, temp_allbed, temp_allbed_sorted, temp_annotbed_mer
 		elif len(gene.split(':')) == 5:
 			(chrom, start, end, name, strand) = gene.split(':')
 			tu = ':'.join(map(str, [chrom, gene2minTuStart[gene], gene2maxTuEnd[gene], strand]))
+		else:
+			continue
 
 		if tu not in seen:
 			seen[tu] = name
@@ -210,18 +212,20 @@ def annotate_tus(infiles, ss, temp_allbed, temp_allbed_sorted, temp_annotbed_mer
 	# write output
 	a = open(out_merge, 'w')
 	for tu in seen:
-		if len(tu.split(':')) == 3:
-			(chrom, start, end) = tu.split(':')
-		elif len(tu.split(':')) == 4:
-			(chrom, start, end, strand) = tu.split(':')
+
+		if tu not in seen.keys():  # @2020.10.10 by Zhang Yiming - change order of this part and add if to avoid bugs
+			continue
 
 		name = seen[tu]
 		gene_count = 0 if 'novel' in name else len(name.split(','))
 
 		if len(tu.split(':')) == 3:
+			(chrom, start, end) = tu.split(':')
 			a.write('\t'.join(map(str, [chrom, start, end, name, gene_count])) + '\n')
 		elif len(tu.split(':')) == 4:
+			(chrom, start, end, strand) = tu.split(':')
 			a.write('\t'.join(map(str, [chrom, start, end, name, gene_count, strand])) + '\n')
+			
 	a.close()
 
 	pb.BedTool(out_merge).sort().saveas(out_merge_sort)
@@ -265,6 +269,9 @@ def get_txregion(in_bed_or_gtf, ss):
 		elif ss == 'n':
 			(chrom, start, end, name, score) = line.rstrip().split('\t')[:5]
 			strand = '.'
+		else:       # @2020.10.10 by Zhang Yiming - add else to avoid bugs
+			continue
+
 		start = int(start) + 1  # 0-based -> 1-based
 		end = int(end)
 		if (chrom, start, end, strand) not in txregions:

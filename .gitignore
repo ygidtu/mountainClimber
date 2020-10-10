@@ -118,3 +118,6 @@ tests/
 
 *chrom.sizes
 testset/
+
+errors/*
+*.pickle

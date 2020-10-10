@@ -2,8 +2,10 @@
 
 import os
 import sys
-import re
+
 from subprocess import Popen, PIPE
+
+from loguru import logger
 
 
 def run_command(cmd, stdin=0, stdoutfile=0, printflag=1):
@@ -20,28 +22,44 @@ def run_command(cmd, stdin=0, stdoutfile=0, printflag=1):
 		p = Popen(cmd, stdout=stdoutfile, stderr=PIPE)
 		p.wait()
 		stdoutfile.flush()
-		stdout = 'NA'
-		stderr = 'NA'
+		stdout = None
+		stderr = None
 
 	if p.returncode != 0:
 		if stdoutfile == 0:
-			sys.stderr.write('command failed')
-			sys.stderr.write(stdout)
-			sys.stderr.write(stderr)
+			logger.error('command failed')
+			logger.error(stdout)
+			logger.error(stderr)
 			sys.exit(1)
 		else:
-			sys.stderr.write('command failed')
-			sys.stderr.write(stderr)
+			logger.error('command failed')
+			logger.error(stderr)
 			sys.exit(1)
 
 	return stdout, stderr
 
 
-def sort_bedfile(infile, outfile):
-	"""sort bed file"""
+def sort_bedfile(infile, outfile, add_header: bool = True):
+	"""
+	sort bed file
+
+	@2020.10.10 by Zhang Yiming: several modifications
+	1. if infile and outfile is same, use a temp file
+	2. add parameter to contol the bed header
+	3. using check_output to better handle the output from command line tools
+	
+	"""
+	if infile == outfile:
+		outfile = outfile + ".sorted"
+		
 	o = open(outfile, 'w')
-	o.write('track name=\"' + os.path.basename(infile).replace('.bed', '') + '\"\n')
+	if add_header:
+		o.write('track name=\"' + os.path.basename(infile).replace('.bed', '') + '\"\n')
 	cmd = ['sort', '-k1,1', '-k2,2n', infile]
 	stdout, _ = run_command(cmd)
-	o.write(stdout.decode("utf-8"))
-	o.close()
+	if stdout:
+		o.write(stdout.decode("utf-8"))
+		o.close()
+
+	if outfile.endswith(".sorted"):
+		os.rename(outfile, outfile.replace(".sorted", ""))

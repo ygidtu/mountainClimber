@@ -3,7 +3,6 @@
 Calculate the average reads/bp for each segment after clustering.
 """
 
-
 import os
 import sys
 import argparse
@@ -11,49 +10,28 @@ import numpy as np  # v1.10.4
 import pybedtools as pb
 from collections import defaultdict
 from datetime import datetime
+from loguru import logger
+
+try:
+	from bed6 import BedUtils, BedPair
+except ImportError:
+	from src.bed6 import BedUtils, BedPair
 
 
-def bedgraph_per_gene_ss(genes, bg_plus, bg_minus, bgfile):
-	"""
-	Run bedtools intersect: strand-specific.
-	Keep strands separate so that lines of coverage for a given gene are consecutive.
-	"""
-	# === split annotation ===
-	plus_bed = bgfile + '.genes.plus'
-	minus_bed = bgfile + '.genes.minus'
-	p = open(plus_bed, 'w')
-	m = open(minus_bed, 'w')
-	with open(genes, 'r') as f:
-		for line in f:
-			if not line.startswith('track'):
-				strand = line.rstrip().split('\t')[5]
-				if strand == '+':
-					p.write(line)
-				elif strand == '-':
-					m.write(line)
-				else:
-					sys.stderr.write('do not recognize strand: ' + strand + '\n')
-					sys.stderr.write(line)
-					sys.exit(1)
-	p.close()
-	m.close()
+def bedgraph_per_gene_intersect(src, target, output=None, strandness = False, keep_all = False):
+	if isinstance(src, str):
+		src = BedUtils.read(src)
 
-	# === bedtools intersect ===
-	pb.BedTool(plus_bed).sort().intersect(bg_plus, wo=True, sorted=True).saveas(bgfile + '.plus')
-	pb.BedTool(minus_bed).sort().intersect(bg_minus, wo=True, sorted=True).saveas(bgfile + '.minus')
+	if isinstance(target, str):
+		target = BedUtils.read(target, required_regions = src)
 
-	t = open(bgfile, 'w')
-	t.write(open(bgfile + '.plus').read())
-	t.write(open(bgfile + '.minus').read())
-	t.close()
+	logger.info(f"{len(src)}, {len(target)}")
 
-	for file in [bgfile + '.plus', bgfile + '.minus', plus_bed, minus_bed]:
-		os.remove(file)
-
-
-def bedgraph_per_gene_nss(genes, bg, bgfile):
-	"""Run bedtools intersect: non-strand-specific"""
-	pb.BedTool(genes).sort().intersect(bg, wo=True, sorted=True).saveas(bgfile)
+	res = BedUtils.overlap(src, target, strandness = strandness)
+	if output:
+		BedPair.save(res, output, keep_all = keep_all)
+	else:
+		return res
 
 
 def get_seg2cov(intersect, cond, sample, outfile):
@@ -66,18 +44,22 @@ def get_seg2cov(intersect, cond, sample, outfile):
 		for l, line in enumerate(f):
 			maxl = l
 
+	# @2020.10.10 by Zhang Yiming - init variables
+	prev_gene, prev_cov_array = "", [],
+	prev_geneid, prev_chrom, prev_start, prev_end, prev_strand = "", "", -1, -1, "."
 	with open(intersect, 'r') as f:
 		for l, line in enumerate(f):
 			if line != '':
 				x = line.rstrip().split('\t')
 				if len(x) == 11:
+					# KI270438.1       9442    19867   Intron;HSC|Junction;HSC:novel64:9251:22706:KI270438.1:NA:50.0     2       .       KI270438.1      14517   14593   .       1       .       76
 					(achrom, astart, aend, ageneid, ascore, astrand, bchrom, bstart, bend, bcov, overlap_len) = x
 				elif len(x) == 10:
 					(achrom, astart, aend, ageneid, ascore, bchrom, bstart, bend, bcov, overlap_len) = x
 					astrand = 0
 				else:
-					sys.stderr.write('EXIT: do not recognize bedgraph intersect format\n')
-					sys.stderr.write(line)
+					logger.error('EXIT: do not recognize bedgraph intersect format')
+					logger.error(line)
 					sys.exit(1)
 
 				astart = int(astart)
@@ -86,7 +68,7 @@ def get_seg2cov(intersect, cond, sample, outfile):
 				bend = int(bend)
 				bcov = float(bcov)
 			else:
-				x = ''
+				continue
 
 			if overlap_len == '0':
 				continue
@@ -114,8 +96,8 @@ def get_seg2cov(intersect, cond, sample, outfile):
 						else:
 							o.write('\t'.join(map(str, [prev_chrom, prev_start, prev_end, ':'.join([prev_geneid, sample, cond]), cov_avg, prev_strand])) + '\n')
 					else:
-						sys.stderr.write(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
-						sys.stderr.write(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
+						logger.error(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
+						logger.error(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
 						sys.exit(1)
 			else:
 				this_gene = ':'.join(x[:5]) if astrand == 0 else ':'.join(x[:6])
@@ -149,8 +131,8 @@ def get_seg2cov(intersect, cond, sample, outfile):
 							else:
 								o.write('\t'.join(map(str, [prev_chrom, prev_start, prev_end, ':'.join([prev_geneid, sample, cond]), cov_avg, prev_strand])) + '\n')
 						else:
-							sys.stderr.write(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
-							sys.stderr.write(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
+							logger.error(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
+							logger.error(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
 							sys.exit(1)
 
 						if this_gene != prev_gene:
@@ -168,8 +150,8 @@ def get_seg2cov(intersect, cond, sample, outfile):
 								else:
 									o.write('\t'.join(map(str, [prev_chrom, prev_start, prev_end, ':'.join([prev_geneid, sample, cond]), cov_avg, prev_strand])) + '\n')
 							else:
-								sys.stderr.write(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
-								sys.stderr.write(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
+								logger.error(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
+								logger.error(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
 								sys.exit(1)
 
 					else:
@@ -181,8 +163,8 @@ def get_seg2cov(intersect, cond, sample, outfile):
 							else:
 								o.write('\t'.join(map(str, [prev_chrom, prev_start, prev_end, ':'.join([prev_geneid, sample, cond]), cov_avg, prev_strand])) + '\n')
 						else:
-							sys.stderr.write(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
-							sys.stderr.write(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
+							logger.error(' '.join(map(str, ['EXIT: seen seg2cov:', prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond])) + '\n')
+							logger.error(' '.join(map(str, [cov_avg, seg2cov[(prev_geneid, prev_chrom, prev_start, prev_end, prev_strand, sample, cond)]])) + '\n')
 							sys.exit(1)
 
 						# === first line of the next gene ===
@@ -201,6 +183,68 @@ def get_seg2cov(intersect, cond, sample, outfile):
 	o.close()
 
 
+def read_count(segments, conditions, bgplus, bgminus, output):
+	# --------------------------------------------------
+	# main routine
+	# --------------------------------------------------
+
+	if not segments:
+		logger.error('EXIT: Please provide --segments')
+		sys.exit(1)
+
+	if not conditions:
+		logger.error('EXIT: Please provide --conditions')
+		sys.exit(1)
+
+	if bgplus:
+		if len(conditions) != len(bgplus):
+			logger.error('EXIT: number of samples don\'t match!')
+			sys.exit(1)
+	else:
+		logger.error('EXIT: Please provide --bgplus')
+		sys.exit(1)
+
+	if bgminus:
+		if len(conditions) != len(bgminus):
+			logger.error('EXIT: number of samples don\'t match!')
+			sys.exit(1)
+			
+	# === set temporary dir ===
+	os.makedirs(output, exist_ok=True)
+
+	# === get the input files for each condition ===
+	cond2bgplus = defaultdict(list)
+	cond2bgminus = defaultdict(list)
+	for c, cond in enumerate(conditions):
+		cond2bgplus[cond].append(bgplus[c])
+		if bgminus:
+			cond2bgminus[cond].append(bgminus[c])
+
+	# === get bedgraph for each segment ===
+	logger.info(f'getting read counts per bp for each gene {datetime.now().time()}')
+	# condSeg2cov = {}
+	for cond in cond2bgplus:
+		for b, bgplus in enumerate(cond2bgplus[cond]):
+			sample = os.path.splitext(os.path.basename(bgplus))[0]
+			logger.info(f'> bedtools intersect: {cond} {sample} {datetime.now().time()}')
+
+			# get bedgraph for each segment
+			intersect = '_'.join([output, cond, sample, 'intersect.txt'])
+			if bgminus:
+				segments = BedUtils.read(segments)
+				res = bedgraph_per_gene_intersect(segments, bgplus, strandness = True)
+				res += bedgraph_per_gene_intersect(segments, cond2bgminus[cond][b], strandness = True)
+				BedPair.save(res, intersect)
+			else:
+				bedgraph_per_gene_intersect(segments, bgplus, intersect, strandness = True)
+
+			logger.info(f'avg coverage per bp for each segment {datetime.now().time()}')
+			get_seg2cov(intersect, cond, sample, outfile='_'.join([output, sample, cond + '_readCounts.bed']))
+
+			# remove temporary file
+			os.remove(intersect)
+
+
 def main(argv):
 	# --------------------------------------------------
 	# get args
@@ -215,73 +259,17 @@ def main(argv):
 	group.add_argument('-o', '--output', dest='output', type=str, metavar='',
 		help='Output prefix. Outputs one _readCounts.bed file per sample.')
 	args = parser.parse_args()
-	print args
+	logger.debug(args)
+	logger.info(f'job starting: {str(datetime.now().time())}')
 
-	# --------------------------------------------------
-	# main routine
-	# --------------------------------------------------
-	print '\njob starting:', str(datetime.now().time())
-
-	if not args.segments:
-		sys.stderr.write('EXIT: Please provide --segments')
-		sys.exit(1)
-
-	if not args.conditions:
-		sys.stderr.write('EXIT: Please provide --conditions')
-		sys.exit(1)
-
-	if args.bgplus:
-		if len(args.conditions) != len(args.bgplus):
-			sys.stderr.write('\n'.join(['EXIT: number of samples don\'t match!:'] + '\n'))
-	else:
-		sys.stderr.write('EXIT: Please provide --bgplus')
-		sys.exit(1)
-
-	if args.bgminus:
-		if len(args.conditions) != len(args.bgminus):
-			sys.stderr.write('\n'.join(['EXIT: number of samples don\'t match!:'] + '\n'))
-
-	# === set temporary dir ===
-	tmpdir = args.output
-	if not os.path.exists(tmpdir):
-		os.makedirs(tmpdir)
-	pb.set_tempdir(tmpdir)
-
-	# === get the input files for each condition ===
-	cond2bgplus = defaultdict(list)
-	cond2bgminus = defaultdict(list)
-	for c, cond in enumerate(args.conditions):
-		cond2bgplus[cond].append(args.bgplus[c])
-		if args.bgminus:
-			cond2bgminus[cond].append(args.bgminus[c])
-
-	# === get bedgraph for each segment ===
-	print '- getting read counts per bp for each gene', str(datetime.now().time())
-	# condSeg2cov = {}
-	for cond in cond2bgplus:
-		for b, bgplus in enumerate(cond2bgplus[cond]):
-			sample = os.path.splitext(os.path.basename(bgplus))[0]
-			print '  -> bedtools intersect:', cond, sample, str(datetime.now().time())
-
-			# get bedgraph for each segment
-			intersect = '_'.join([args.output, cond, sample, 'intersect.txt'])
-			if args.bgminus:
-				bedgraph_per_gene_ss(args.segments, bgplus, cond2bgminus[cond][b], intersect)
-			else:
-				bedgraph_per_gene_nss(args.segments, bgplus, intersect)
-
-			print '  - avg coverage per bp for each segment', str(datetime.now().time())
-			get_seg2cov(intersect, cond, sample, outfile='_'.join([args.output, sample, cond + '_readCounts.bed']))
-
-			# remove temporary file
-			os.remove(intersect)
-
-	# if os.listdir(tmpdir) == []:
-	#   os.rmdir(tmpdir)
-	# else:
-	#   sys.stderr.write('WARNING: could not remove directory ' + tmpdir + '\n')
-
-	print '\nfinished:', str(datetime.now().time())
+	read_count(
+		segments=args.segments, 
+		conditions=args.conditions, 
+		bgplus=args.bgplus, 
+		bgminus=args.bgminus, 
+		output=args.output
+	)
+	logger.info(f'finished: {datetime.now().time()}')
 
 
 # boilerplate
