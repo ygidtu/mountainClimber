@@ -5,12 +5,14 @@ import sys
 
 from subprocess import Popen, PIPE
 
+import pybedtools as pb
+
 from loguru import logger
 
 
-def run_command(cmd, stdin=0, stdoutfile=0, printflag=1):
+def run_command(cmd, stdin=0, stdoutfile=0, printflag=False):
 	"""run a subprocess"""
-	if printflag == 1:
+	if printflag:
 		print (' '.join(cmd))
 	if stdin == 0 and stdoutfile == 0:
 		p = Popen(cmd, stdout=PIPE, stderr=PIPE)
@@ -39,7 +41,7 @@ def run_command(cmd, stdin=0, stdoutfile=0, printflag=1):
 	return stdout, stderr
 
 
-def sort_bedfile(infile, outfile, add_header: bool = True):
+def sort_bedfile(infile, outfile, add_header: bool = True, sort_by_bedtools: bool = False):
 	"""
 	sort bed file
 
@@ -51,15 +53,18 @@ def sort_bedfile(infile, outfile, add_header: bool = True):
 	"""
 	if infile == outfile:
 		outfile = outfile + ".sorted"
-		
-	o = open(outfile, 'w')
-	if add_header:
-		o.write('track name=\"' + os.path.basename(infile).replace('.bed', '') + '\"\n')
-	cmd = ['sort', '-k1,1', '-k2,2n', infile]
-	stdout, _ = run_command(cmd)
-	if stdout:
-		o.write(stdout.decode("utf-8"))
-		o.close()
+
+	if sort_by_bedtools:
+		pb.BedTool(infile).sort().saveas(outfile)
+	else:
+		with open(outfile, 'w') as o:
+			if add_header:
+				o.write('track name=\"' + os.path.basename(infile).replace('.bed', '') + '\"\n')
+			cmd = ['sort', '-k1,1', '-k2,2n', '-T', os.path.dirname(outfile), infile]
+			stdout, _ = run_command(cmd)
+			if stdout:
+				o.write(stdout.decode("utf-8"))
+				o.close()
 
 	if outfile.endswith(".sorted"):
 		os.rename(outfile, outfile.replace(".sorted", ""))

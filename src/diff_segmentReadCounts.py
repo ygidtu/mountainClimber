@@ -6,33 +6,84 @@ Calculate the average reads/bp for each segment after clustering.
 import os
 import sys
 import argparse
-import numpy as np  # v1.10.4
-import pybedtools as pb
+
 from collections import defaultdict
 from datetime import datetime
+from multiprocessing import Pool
+
+import numpy as np  # v1.10.4
+import pybedtools as pb
+
 from loguru import logger
 
 try:
-	from bed6 import BedUtils, BedPair
+	from functions import sort_bedfile
 except ImportError:
-	from src.bed6 import BedUtils, BedPair
+	from src.functions import sort_bedfile
 
 
-def bedgraph_per_gene_intersect(src, target, output=None, strandness = False, keep_all = False):
-	if isinstance(src, str):
-		src = BedUtils.read(src)
+def bedgraph_per_gene_ss(genes, bg_plus, bg_minus, bgfile):
+	"""
+	Run bedtools intersect: strand-specific.
+	Keep strands separate so that lines of coverage for a given gene are consecutive.
+	"""
+	# === split annotation ===
+	plus_bed = bgfile + '.genes.plus'
+	minus_bed = bgfile + '.genes.minus'
+	p = open(plus_bed, 'w')
+	m = open(minus_bed, 'w')
+	with open(genes, 'r') as f:
+		for line in f:
+			if not line.startswith('track'):
+				strand = line.rstrip().split('\t')[5]
+				if strand == '+':
+					p.write(line)
+				elif strand == '-':
+					m.write(line)
+				else:
+					logger.error('do not recognize strand: ' + strand)
+					logger.error(line)
+					sys.exit(1)
+	p.close()
+	m.close()
 
-	if isinstance(target, str):
-		target = BedUtils.read(target, required_regions = src)
+	# === bedtools intersect ===
+	try:
+		pb.BedTool(plus_bed).intersect(bg_plus, wo=True, sorted=True).saveas(bgfile + '.plus')
+	except pb.helpers.BEDToolsError as err:
+		logger.error(err)
+		logger.debug("gusses {} is not sorted", bg_plus)
+		sort_bedfile(bg_plus, bg_plus, add_header = False, sort_by_bedtools = True)
+		pb.BedTool(plus_bed).intersect(bg_plus, wo=True, sorted=True).saveas(bgfile + '.plus')
 
-	logger.info(f"{len(src)}, {len(target)}")
+	try:
+		pb.BedTool(minus_bed).intersect(bg_minus, wo=True, sorted=True).saveas(bgfile + '.minus')
+	except pb.helpers.BEDToolsError as err:
+		logger.error(err)
+		logger.debug("gusses {} is not sorted", bg_minus)
+		sort_bedfile(bg_minus, bg_minus, add_header = False, sort_by_bedtools = True)
+		pb.BedTool(minus_bed).intersect(bg_minus, wo=True, sorted=True).saveas(bgfile + '.minus')
 
-	res = BedUtils.overlap(src, target, strandness = strandness)
-	if output:
-		BedPair.save(res, output, keep_all = keep_all)
-	else:
-		return res
+	t = open(bgfile, 'w')
+	t.write(open(bgfile + '.plus').read())
+	t.write(open(bgfile + '.minus').read())
+	t.close()
 
+	for file in [bgfile + '.plus', bgfile + '.minus', plus_bed, minus_bed]:
+		if os.path.exists(file):
+			os.remove(file)
+
+
+def bedgraph_per_gene_nss(genes, bg, bgfile):
+	"""Run bedtools intersect: non-strand-specific"""
+	try:
+		pb.BedTool(genes).intersect(bg, wo=True, sorted=True).saveas(bgfile)
+	except pb.helpers.BEDToolsError as err:
+		logger.error(err)
+		logger.debug("gusses {} is not sorted", bg)
+		sort_bedfile(bg, bg, add_header = False, sort_by_bedtools = True)
+		pb.BedTool(genes).intersect(bg, wo=True, sorted=True).saveas(bgfile)
+	
 
 def get_seg2cov(intersect, cond, sample, outfile):
 	"""Get coverage of each segment & write to outfile in bed format"""
@@ -183,7 +234,29 @@ def get_seg2cov(intersect, cond, sample, outfile):
 	o.close()
 
 
-def read_count(segments, conditions, bgplus, bgminus, output):
+def process_read_count_single_process(data: dict):
+
+	b, bgplus, cond2bgminus, cond, output, bgminus, segments = data["b"], data["bgplus"], data["cond2bgminus"], data["cond"], data["output"], data["bgminus"], data["segments"]
+
+	sample = os.path.splitext(os.path.basename(bgplus))[0]
+	logger.info(f'> bedtools intersect: {cond} {sample} {datetime.now().time()}')
+
+	# get bedgraph for each segment
+	intersect = '_'.join([output, cond, sample, 'intersect.txt'])
+
+	if bgminus:
+		bedgraph_per_gene_ss(segments, bgplus, cond2bgminus[cond][b], intersect)
+	else:
+		bedgraph_per_gene_nss(segments, bgplus, intersect)
+
+	logger.info(f'avg coverage per bp for each segment {sample} {datetime.now().time()}')
+	get_seg2cov(intersect, cond, sample, outfile='_'.join([output, sample, cond + '_readCounts.bed']))
+
+	# remove temporary file
+	os.remove(intersect)
+
+
+def read_count(segments, conditions, bgplus, bgminus, output, n_jobs=1):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
@@ -210,7 +283,7 @@ def read_count(segments, conditions, bgplus, bgminus, output):
 			sys.exit(1)
 			
 	# === set temporary dir ===
-	os.makedirs(output, exist_ok=True)
+	os.makedirs(os.path.dirname(output), exist_ok=True)
 
 	# === get the input files for each condition ===
 	cond2bgplus = defaultdict(list)
@@ -222,27 +295,24 @@ def read_count(segments, conditions, bgplus, bgminus, output):
 
 	# === get bedgraph for each segment ===
 	logger.info(f'getting read counts per bp for each gene {datetime.now().time()}')
-	# condSeg2cov = {}
+
+	data = []
 	for cond in cond2bgplus:
 		for b, bgplus in enumerate(cond2bgplus[cond]):
-			sample = os.path.splitext(os.path.basename(bgplus))[0]
-			logger.info(f'> bedtools intersect: {cond} {sample} {datetime.now().time()}')
+			data.append({
+				"b": b,
+				"bgplus": bgplus,
+				"cond2bgminus": cond2bgminus,
+				"cond": cond,
+				"output": output,
+				"bgminus": bgminus,
+				"segments": segments
+			})
 
-			# get bedgraph for each segment
-			intersect = '_'.join([output, cond, sample, 'intersect.txt'])
-			if bgminus:
-				segments = BedUtils.read(segments)
-				res = bedgraph_per_gene_intersect(segments, bgplus, strandness = True)
-				res += bedgraph_per_gene_intersect(segments, cond2bgminus[cond][b], strandness = True)
-				BedPair.save(res, intersect)
-			else:
-				bedgraph_per_gene_intersect(segments, bgplus, intersect, strandness = True)
-
-			logger.info(f'avg coverage per bp for each segment {datetime.now().time()}')
-			get_seg2cov(intersect, cond, sample, outfile='_'.join([output, sample, cond + '_readCounts.bed']))
-
-			# remove temporary file
-			os.remove(intersect)
+	if n_jobs <= 0:
+		n_jobs = 1
+	with Pool(min(n_jobs, len(data))) as p:
+		p.map(process_read_count_single_process, data)
 
 
 def main(argv):
@@ -255,6 +325,7 @@ def main(argv):
 	group.add_argument('-p', '--bgplus', dest='bgplus', type=str, nargs='*', metavar='', help='List of space-delimited bedgraphs: non-strand-specific or plus strand.')
 	group.add_argument('-m', '--bgminus', dest='bgminus', type=str, nargs='*', metavar='', help='List of space-delimited bedgraphs: minus strand.')
 	group.add_argument('-c', '--conditions', dest='conditions', type=str, nargs='*', metavar='', help='List of space-delimited condition labels for each --bgplus file')
+	group.add_argument('-n', '--n_jobs', dest='n_jobs', type=int, metavar='', help='The number of process to use', default=1)
 	group = parser.add_argument_group('Output')
 	group.add_argument('-o', '--output', dest='output', type=str, metavar='',
 		help='Output prefix. Outputs one _readCounts.bed file per sample.')
@@ -267,7 +338,8 @@ def main(argv):
 		conditions=args.conditions, 
 		bgplus=args.bgplus, 
 		bgminus=args.bgminus, 
-		output=args.output
+		output=args.output,
+		n_jobs=args.n_jobs
 	)
 	logger.info(f'finished: {datetime.now().time()}')
 

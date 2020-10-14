@@ -3,9 +3,13 @@
 import os
 import sys
 import argparse
-import numpy as np  # v1.10.4
+
 from collections import defaultdict
 from datetime import datetime
+
+import numpy as np  # v1.10.4
+
+from loguru import logger
 
 try:
 	from functions import sort_bedfile, run_command
@@ -92,7 +96,7 @@ def run(input_file, output, min_segments, verbose):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
-	print ('\njob starting:', str(datetime.now().time()))
+	logger.info('job starting: {}', str(datetime.now().time()))
 
 	# === get coverage for each end segment ===
 	seg2cov = {}
@@ -144,12 +148,12 @@ def run(input_file, output, min_segments, verbose):
 		cov_mean_list, start_list, end_list, cplabel_list, ind_list, ind_max_list = zip(*gene2cps_tuple)
 		nsamples = len(input_file)
 		if verbose:
-			print ('gene', gene, ind_max_list[0])
-			print ('cov', cov_mean_list)
-			print ('starts', start_list)
-			print ('ends', end_list)
-			print ('cplabels', cplabel_list)
-			print ('inds', ind_list)
+			logger.debug('gene {} {}', gene, ind_max_list[0])
+			logger.debug('cov {}', cov_mean_list)
+			logger.debug('starts {}', start_list)
+			logger.debug('ends {}', end_list)
+			logger.debug('cplabels {}', cplabel_list)
+			logger.debug('inds {}', ind_list)
 
 		# if len(cplabel_list) >= 3:
 		if len(cplabel_list) > min_segments:
@@ -166,7 +170,7 @@ def run(input_file, output, min_segments, verbose):
 				first_jxn_ind = 1
 				last_jxn_ind = len(cov_mean_list) - 2
 			if verbose:
-				print ('jxn inds:', first_jxn_ind, last_jxn_ind)
+				logger.debug('jxn inds: {} {}', first_jxn_ind, last_jxn_ind)
 
 			indices_left = [i for i, x in enumerate(cplabel_list) if i < first_jxn_ind or ind_list[i] == '1' or 'Left' in x or ('TSS' in x and strand_inferred == '+') or ('APA' in x and strand_inferred == '-') or ('PolyA' in x and strand_inferred == '-')]
 			indices_right = [i for i, x in enumerate(cplabel_list) if i > last_jxn_ind or ind_list[i] == ind_max_list[i] or 'Right' in x or ('TSS' in x and strand_inferred == '-') or ('APA' in x and strand_inferred == '+') or ('PolyA' in x and strand_inferred == '+')]
@@ -204,17 +208,17 @@ def run(input_file, output, min_segments, verbose):
 					segs_right.remove(seg)
 
 		if len(segs_left) != len(segs_left_temp) or len(segs_right) != len(segs_right_temp):
-			sys.stderr.write('WARNING: removed ambiguous segments that could have been assigned to either end\n')
+			logger.warning('removed ambiguous segments that could have been assigned to either end')
 
 		if verbose:
-			print ('segs_left_temp', segs_left_temp)
-			print ('segs_right_temp', segs_right_temp)
-			print ('segs_left', segs_left)
-			print ('segs_right', segs_right)
+			logger.debug('segs_left_temp {}', segs_left_temp)
+			logger.debug('segs_right_temp {}', segs_right_temp)
+			logger.debug('segs_left {}', segs_left)
+			logger.debug('segs_right {}', segs_right)
 
 		# === calculate pi and write output ===
 		if len(segs_left) == 0:
-			print ('NO LEFT SEG?')
+			logger.error('NO LEFT SEG?')
 			sys.exit(1)
 		elif len(segs_left) == 1:
 			ind = 'L0'
@@ -237,7 +241,7 @@ def run(input_file, output, min_segments, verbose):
 
 			ru = calculate_relative_usage(seg_left2covlist, len(samples))
 			if verbose:
-				print ('ru left', ru)
+				logger.debug('ru left {}', ru)
 
 			segs_left_nonzeroRU = [x for i, x in enumerate(segs_left) if ru[i] != 0]
 			nonzeroRU = [x for x in ru if x != 0]
@@ -247,7 +251,7 @@ def run(input_file, output, min_segments, verbose):
 				write_output_cp_left(o3, gene, this_seg, n=nsamples, ind=ind, ru=nonzeroRU[i])
 
 		if len(segs_right) == 0:
-			print ('NO RIGHT SEG?')
+			logger.error('NO RIGHT SEG?')
 			sys.exit(1)
 		elif len(segs_right) == 1:
 			ind = 'R0'
@@ -271,7 +275,7 @@ def run(input_file, output, min_segments, verbose):
 			ru = calculate_relative_usage(seg_right2covlist, len(samples))
 			ru = ru[::-1]  # reverse: proximal -> distal order
 			if verbose:
-				print ('ru right', ru)
+				logger.debug('ru right {}', ru)
 
 			segs_right_nonzeroRU = [x for i, x in enumerate(segs_right) if ru[i] != 0]
 			nonzeroRU = [x for x in ru if x != 0]
@@ -281,10 +285,10 @@ def run(input_file, output, min_segments, verbose):
 				write_output_cp_right(o3, gene, this_seg, n=nsamples, ind=ind, ru=nonzeroRU[i])
 	o3.close()
 
-	sort_bedfile(infile=output, outfile=output + '.sorted')
-	os.rename(output + '.sorted', output)
+	sort_bedfile(infile=output, outfile=output)
+	# os.rename(output + '.sorted', output)
 
-	print ('finished:', str(datetime.now().time()))
+	logger.info('finished:', str(datetime.now().time()))
 
 
 def main(argv):
@@ -300,7 +304,7 @@ def main(argv):
 	group.add_argument('-o', '--output', dest='output', type=str, help='Output bed filename. Bed name field = CPlabel:gene:TUstart:TUend:inferred_strand:chromosome:segmentCoverage:CPindex')
 	group.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Print progress')
 	args = parser.parse_args()
-	print (args)
+	logger.debug(args)
 
 	run(input_file=args.input, output=args.output, min_segments=args.min_segments, verbose=args.verbose)
 

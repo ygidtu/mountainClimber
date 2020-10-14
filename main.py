@@ -3,6 +3,9 @@
 u"""
 Created at 2020.09.04 by Zhang Yiming
 """
+import warnings
+warnings.filterwarnings("ignore")
+
 import click
 
 from cli.climb import climb

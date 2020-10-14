@@ -14,7 +14,7 @@ RUN apt-key adv --keyserver keys.gnupg.net --recv-key 'E19F5F87128899B192B1A2C2A
     apt update && apt install -y samtools bedtools r-base
 
 
-RUN pip install -i https://mirrors.aliyun.com/pypi/simple click peakutils pysam pybedtools matplotlib
+RUN pip install -i https://mirrors.aliyun.com/pypi/simple click peakutils pysam pybedtools matplotlib loguru sklearn
 
 RUN echo 'options("repos" = c(CRAN="https://mirrors.tuna.tsinghua.edu.cn/CRAN/"))' > ~/.Rprofile && \
     Rscript -e 'install.packages(c("ggplot2", "reshape2", "dplyr"))'

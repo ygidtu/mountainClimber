@@ -7,10 +7,13 @@ Calculate the relative usage of each 5' and 3' segment
 import os
 import sys
 import argparse
-import pybedtools as pb
-import numpy as np 					# v1.10.4
+
 from collections import defaultdict
 from datetime import datetime
+
+import numpy as np 					# v1.10.4
+import pybedtools as pb
+
 from loguru import logger
 try:
 	from functions import sort_bedfile, run_command
@@ -518,8 +521,8 @@ def diff_ru(input_file, segments, condition, input_cp, output, min_segments, ver
     o4.close()
 
     # remove temporary directory
-    if os.path.isdir(output):
-        os.rmdir(output)
+    # if os.path.isdir(output):
+    #     os.rmdir(output)
 
 
 def main(argv):

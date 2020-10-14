@@ -3,14 +3,14 @@
 Cluster change first first across replicates within each condition, and then across conditions.
 """
 
-
-import os
 import sys
 import argparse
 
-import numpy as np 					# v1.10.4
 from collections import defaultdict
 from datetime import datetime
+
+import numpy as np 					# v1.10.4
+
 from loguru import logger
 from sklearn.cluster import DBSCAN 	# v0.18.1
 

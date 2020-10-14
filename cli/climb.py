@@ -10,6 +10,7 @@ from multiprocessing import Pool, cpu_count
 from subprocess import check_call
 
 import click
+import pybedtools as pb
 import pysam
 
 from src import get_junction_counts, mountainClimberTU, merge_tus, mountainClimberRU, mountainClimberCP
@@ -188,6 +189,9 @@ def climb(
     
     output = os.path.abspath(output)
     os.makedirs(output, exist_ok=True)
+    temp_dir = output + "_tmp"
+    os.makedirs(temp_dir, exist_ok=True)
+    pb.helpers.set_tempdir(temp_dir)
 
     print("Get genome size")
     gsize = os.path.join(output, "genome.chrom.sizes")
@@ -235,3 +239,5 @@ def climb(
         
         p.close()
         p.join()
+
+    pb.helpers.cleanup()

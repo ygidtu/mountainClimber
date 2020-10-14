@@ -7,9 +7,12 @@ Identify split reads from a bam file and report the total counts per intron.
 import os
 import sys
 import argparse
-from datetime import datetime
-import pysam
 from collections import OrderedDict
+from datetime import datetime
+
+import pysam
+
+from loguru import logger
 
 
 def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strandedness):
@@ -23,7 +26,7 @@ def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strande
 	Output: outfile in bed format: chromosome, intron start, intron end, intron name, read count, strand
 	"""
 
-	bamfile = pysam.Samfile(bam_file, "rb")
+	bamfile = pysam.AlignmentFile(bam_file, "rb")
 	out = open(outfile + '.tmp','w')
 	overhang, min_intron, max_intron = map(int, (overhang, min_intron, max_intron))
 
@@ -36,7 +39,7 @@ def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strande
 	elif strandedness == 'single':
 		strnd1 = '+' ; strnd2 = '-'
 	else:
-		sys.stderr.write('EXIT: do not recongize strandedness ' + strandedness + '\n')
+		logger.error('EXIT: do not recongize strandedness ' + strandedness)
 		sys.exit(1)
 
 	junctions_idme = OrderedDict()
@@ -144,12 +147,12 @@ def main(argv):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
-	print ('\nstarting:', str(datetime.now().time()))
+	logger.info('starting: {}', str(datetime.now().time()))
 
 	make_intron_bed(args.input_bam, args.output, overhang = args.overhang,
 		min_intron = args.min_intron, max_intron = args.max_intron, strandedness = args.strand)
 
-	print ('\nfinished:', str(datetime.now().time()))
+	logger.info('finished: {}', str(datetime.now().time()))
 
 
 # boilerplate

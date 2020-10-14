@@ -7,16 +7,18 @@ Test for differential ATSS and APA sites between two conditions
 import os
 import sys
 import argparse
-import numpy as np 					# v1.10.4
+
 from collections import defaultdict
 from datetime import datetime
+
+import numpy as np 		# v1.10.4
+
 from loguru import logger
 
 try:
-	from functions import sort_bedfile, run_command
+	from functions import run_command
 except ImportError:
-	from src.functions import sort_bedfile, run_command
-import pybedtools as pb
+	from src.functions import run_command
 
 
 def get_seg2cov(infile, sample, seg2cov):
@@ -198,7 +200,7 @@ def test(input_file, output, conditions_input, ru_segments, conditions_ru_segmen
 		sys.exit(1)
 	elif len(ru_segments) != 1:
 		if len(ru_segments) != len(list(set(conditions_ru_segments))):
-			logger.error('EXIT: the number of --ru_segments files should equal the total unique --conditions input\n')
+			logger.error('EXIT: the number of --ru_segments files should equal the total unique --conditions input')
 			sys.exit(1)
 
 	# === get segment coverage for each sample ===
@@ -666,7 +668,8 @@ def test(input_file, output, conditions_input, ru_segments, conditions_ru_segmen
 		# remove intermediate files
 		if not keep:
 			for file in [landmarker_test_file, file_test]:
-				os.remove(file)
+				if os.path.exists(file):
+					os.remove(file)
 
 	else:
 		logger.error('EXIT: please input two conditions')

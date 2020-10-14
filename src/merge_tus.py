@@ -7,16 +7,20 @@ import os
 import re
 import sys
 import argparse
-import pybedtools as pb
+
 from datetime import datetime
 from collections import defaultdict
+
+import pybedtools as pb
+
+from loguru import logger
 
 
 def check_empty_file(bedfile):
 	"""Check if file is empty"""
 	f = open(bedfile, 'r')
 	if len(f.readlines()) == 0:
-		sys.stderr.write('EXIT: no bedgraph output!')
+		logger.error('EXIT: no bedgraph output!')
 		sys.exit(1)
 	f.close()
 
@@ -35,8 +39,8 @@ def merge_annotation(refgtf, ss, temp_annotbed, temp_annotbed_sort, temp_annotbe
 				gs = [a for a in x[8].split(';') if 'gene_name' in a]
 				tx = [a for a in x[8].split(';') if 'transcript_id' in a]
 				if len(gs) > 1 or len(tx) > 1:
-					print ('>1 gene_name or transcript_id found!')
-					print (gs, tx)
+					logger.error('>1 gene_name or transcript_id found!')
+					logger.error("{} {}", gs, tx)
 					sys.exit(1)
 				else:
 					gs = gs[0].replace('gene_name', '').replace('\"', '').replace(' ', '')
@@ -58,7 +62,7 @@ def merge_annotation(refgtf, ss, temp_annotbed, temp_annotbed_sort, temp_annotbe
 							gs2maxTxEnd[(gs_dup, chrom, strand)] = txend
 						elif (gs2minTxStart[(gs_dup, chrom, strand)] != txstart) or (
 								gs2maxTxEnd[(gs_dup, chrom, strand)] != txend):
-							sys.stderr.write(' '.join([gs_dup, 'exists, but dif transcripts:',
+							logger.error(' '.join([gs_dup, 'exists, but dif transcripts:',
 													   str(gs2minTxStart[(gs_dup, chrom, strand)]), str(txstart),
 													   str(gs2maxTxEnd[(gs_dup, chrom, strand)]), str(txend)]) + '\n')
 							sys.exit(1)
@@ -70,7 +74,7 @@ def merge_annotation(refgtf, ss, temp_annotbed, temp_annotbed_sort, temp_annotbe
 							gs2maxTxEnd[(gs_dup, chrom, strand)] = txend
 						elif (gs2minTxStart[(gs_dup, chrom, strand)] != txstart) or (
 								gs2maxTxEnd[(gs_dup, chrom, strand)] != txend):
-							sys.stderr.write(' '.join([gs_dup, 'exists, but dif transcripts:',
+							logger.error(' '.join([gs_dup, 'exists, but dif transcripts:',
 													   str(gs2minTxStart[(gs_dup, chrom, strand)]), str(txstart),
 													   str(gs2maxTxEnd[(gs_dup, chrom, strand)]), str(txend)]) + '\n')
 							sys.exit(1)
@@ -147,7 +151,7 @@ def annotate_tus(infiles, ss, temp_allbed, temp_allbed_sorted, temp_annotbed_mer
 	os.remove(temp_annotbed_merged_sorted)
 	os.remove(temp_allbed_sorted)
 
-	# print '- merging TUs within the same gene'
+	# logger.error'- merging TUs within the same gene'
 	gene2minTuStart = {}
 	gene2maxTuEnd = {}
 	novel_count = 0
@@ -178,7 +182,7 @@ def annotate_tus(infiles, ss, temp_allbed, temp_allbed_sorted, temp_annotbed_mer
 			else:
 				gene = ':'.join(x[6:10]) + ':' + x[11]
 		else:
-			sys.stderr.write('EXIT: file type not supported: ' + str(len(x)) + '\n')
+			logger.error('EXIT: file type not supported: ' + str(len(x)))
 			sys.exit(1)
 
 		# merge TUs in the same gene
@@ -277,7 +281,7 @@ def get_txregion(in_bed_or_gtf, ss):
 		if (chrom, start, end, strand) not in txregions:
 			txregions[(chrom, start, end, strand)] = ':'.join([score, name])
 		else:
-			print ('seen', chrom, start, end, strand)
+			logger.error('seen {}:{}-{}:{}', chrom, start, end, strand)
 			sys.exit(1)
 	f.close()
 	return txregions
@@ -398,7 +402,7 @@ def update_gtf_bed(refgtf, ss, txregions, out_annot_gtf, out_annot_bed):
 			if chrom == "-1":
 				continue
 			if 'novel' not in name:
-				print ('didn\'t overlap gene when it should have?', chrom, start, end, strand, name_list)
+				logger.error('didn\'t overlap gene when it should have? {}:{}-{}:{} {}', chrom, start, end, strand, name_list)
 				# sys.exit(1)
 	
 			# txregion bed: keep original
@@ -446,7 +450,7 @@ def merge(infiles, output, refgtf, ss):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
-	print ('\njob starting:', str(datetime.now().time()))
+	logger.info('job starting: {}', str(datetime.now().time()))
 
 	# === I/O ===
 	temp_allbed = output + '.temp.bed'
@@ -467,22 +471,22 @@ def merge(infiles, output, refgtf, ss):
 	out_annot_singleGenes_bed = out_annot_bed.replace('.bed', '_singleGenes.bed')
 
 	# === main ===
-	print ('- merging overlapping gene annotations', str(datetime.now().time()))
+	logger.info('merging overlapping gene annotations {}', str(datetime.now().time()))
 	merge_annotation(refgtf, ss, temp_annotbed, temp_annotbed_sort,
 					 temp_annotbed_merged, temp_annotbed_merged_sorted)
 
-	print ('- annotating TUs & merging those within the same gene', str(datetime.now().time()))
+	logger.info('annotating TUs & merging those within the same gene {}', str(datetime.now().time()))
 	annotate_tus(infiles, ss, temp_allbed, temp_allbed_sorted,
 				 temp_annotbed_merged_sorted, out_intersect, out_merge, out_merge_sort, out_annot)
 
-	print ('- updating gtf to include TUs', str(datetime.now().time()))
+	logger.info('updating gtf to include TUs {}', str(datetime.now().time()))
 	if ss == 'n':
-		print ('  -> NOTE: because data is not strand-specific, we assign + strand for all novel TUs in gtf file.')
+		logger.warning('> NOTE: because data is not strand-specific, we assign + strand for all novel TUs in gtf file.')
 	txregions = get_txregion(out_annot, ss)
 	os.remove(out_annot)
 	update_gtf_bed(refgtf, ss, txregions, out_annot_gtf, out_annot_bed)
 
-	print ('- getting subset of TUs with <= 1 gene', str(datetime.now().time()))
+	logger.info('getting subset of TUs with <= 1 gene {}', str(datetime.now().time()))
 	o = open(out_annot_singleGenes_bed, 'w')
 	f = open(out_annot_bed, 'r')
 	for line in f:
@@ -492,8 +496,7 @@ def merge(infiles, output, refgtf, ss):
 	f.close()
 	o.close()
 
-	print ('\nfinished:', str(datetime.now().time()))
-
+	logger.info('finished: {}', str(datetime.now().time()))
 
 
 def main(argv):

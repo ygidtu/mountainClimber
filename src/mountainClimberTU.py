@@ -14,9 +14,12 @@ import argparse
 import gzip
 import re
 import math
-import pybedtools as pb
-from datetime import datetime
+
 from collections import defaultdict
+from datetime import datetime
+
+import pybedtools as pb
+
 from loguru import logger
 
 try:
@@ -145,13 +148,13 @@ def merge_windows(window2count_length, min_percent, min_reads, bedgraph, outfile
 	t.close()
 
 	if count_windows_filtered == 0:
-		logger.error(' '.join(map(str, ['  -> No windows met criteria: >=', min_reads, 'reads/bp and >=', min_percent, "% bp covered"])) + '\n')
+		logger.error('No windows met criteria: >= {}, reads/bp and >= {}, {} bp covered', min_reads, min_percent, count_windows_filtered)
 		return 0
 	else:
 		outfile_merged = outfile_temp_windows + '.merge'
 		pb.BedTool(outfile_temp_windows).sort().merge(c=4, o='distinct').saveas(outfile_merged)
 
-		sort_bedfile(bedgraph, bedgraph  + ".sorted")
+		sort_bedfile(bedgraph, bedgraph)
 
 		# merge bedgraph
 		# data = []
@@ -167,8 +170,8 @@ def merge_windows(window2count_length, min_percent, min_reads, bedgraph, outfile
 		# 	for line in data:
 		# 		w.write("\t".join([str(x) for x in line]) + "\n")
 
-		pb.BedTool(bedgraph + ".sorted").merge().saveas(outfile_bgmerge)
-		os.remove(bedgraph + ".sorted")
+		pb.BedTool(bedgraph).merge().saveas(outfile_bgmerge)
+		# os.remove(bedgraph + ".sorted")
 
 		# merge TUs with bedgraph
 		outfile_extend = outfile_merged + '.extend'
@@ -209,7 +212,7 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 	gc_strand, outfile_temp_unionbg = ".", None  # @2020.10.10 by Zhang yiming - init variable
 	if junc:
 		if re.search(r'\.bed$', junc):
-			print('- converting junction .bed file to .bedgraph', str(datetime.now().time()))
+			logger.info('converting junction .bed file to .bedgraph {}', str(datetime.now().time()))
 
 			# --- get overlapping junction regions ---
 			temp_jxn_intersect = output + '.temp.junction.intersect.txt'
@@ -273,7 +276,7 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 			sys.exit(1)
 
 		# combine bedgraphs: using subprocess because pybedtools complains about unionbedg format not being bed
-		print('- merging junctions with bedgraph', str(datetime.now().time()))
+		logger.info('merging junctions with bedgraph {}', str(datetime.now().time()))
 		outfile_temp_unionbg = output + '.unionbedg'
 		j = open(outfile_temp_unionbg, 'w')
 		cmd = ['bedtools', 'unionbedg', '-i', bedgraph, outfile_temp_jxn_bg]
@@ -293,25 +296,25 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 				m.write('\t'.join(map(str, [chrom, start, end, int(count1) + int(count2)])) + '\n')
 		m.close()
 
-		print('- calculating window read counts:', str(datetime.now().time()))
+		logger.info('calculating window read counts: {}', str(datetime.now().time()))
 		window2count_length, chr2starts, chr2ends = window_count(outfile_temp_merge_bg_jxn, window_size)
 	else:
 		logger.error('No --junc file was input. It is recommended to include this input.')
 
-		print('- calculating window read counts:', str(datetime.now().time()))
+		logger.info('calculating window read counts: {}', str(datetime.now().time()))
 		window2count_length, chr2starts, chr2ends = window_count(bedgraph, window_size)
 		outfile_temp_merge_bg_jxn = bedgraph
 
-	print('  ->', len(window2count_length.keys()), 'total windows', str(datetime.now().time()))
+	logger.info('{} total windows {}', len(window2count_length.keys()), str(datetime.now().time()))
 
 	# === merge consecutive windows ===
-	print('- merging consecutive windows:', str(datetime.now().time()))
+	logger.info('merging consecutive windows: {}', str(datetime.now().time()))
 	outfile_temp_windows = output + '.windows'
 	outfile_temp_bg_merged = output + '.bg.merged'
 	transcripts_trimmed = merge_windows(window2count_length, min_percent, min_reads, outfile_temp_merge_bg_jxn, outfile_temp_bg_merged, outfile_temp_windows)
 
 	if transcripts_trimmed != 0:
-		print('  ->', len(transcripts_trimmed.keys()), 'total transcripts after merging')
+		logger.info('total transcripts after merging {}', len(transcripts_trimmed))
 
 		# === get strand ===
 		if strand == 1:
@@ -321,11 +324,11 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 		elif strand == 0:
 			strand = 0
 		else:
-			print('DIED: did not recognize strand', args.strand)
+			logger.error('DIED: did not recognize strand {}', strand)
 			sys.exit()
 
 		# === print output -> unsorted bed format ===
-		print("printing output (unsorted): " + str(datetime.now().time()))
+		logger.info("printing output (unsorted): {}", str(datetime.now().time()))
 		transcripts_trimmed_list = list(sorted(transcripts_trimmed.keys()))
 		output_temp = output + '.temp'
 		o = open(output_temp, 'w')
@@ -351,8 +354,6 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 		if outfile_temp_unionbg:
 			os.remove(outfile_temp_unionbg)
 		os.remove(outfile_temp_merge_bg_jxn)
-
-	print('\nfinished: ' + str(datetime.now().time()))
 
 
 def main(argv):
@@ -389,7 +390,7 @@ def main(argv):
 	# --------------------------------------------------
 	# main routine
 	# --------------------------------------------------
-	print('\njob starting:', str(datetime.now().time()))
+	logger.info('job starting: {}', str(datetime.now().time()))
 
 	if not args.output:
 		logger.error('EXIT: please enter --output')
@@ -406,6 +407,7 @@ def main(argv):
 		min_percent=args.min_percent, min_reads=args.min_reads,
 		window_size=args.window_size
 	)
+	logger.info('finished: ' + str(datetime.now().time()))
 
 
 # boilerplate
