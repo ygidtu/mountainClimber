@@ -29,6 +29,7 @@ def multiprocessing_diff_ru(data):
         min_segments=data["min_segments"], 
         verbose=data["verbose"]
     )
+    pb.helpers.cleanup()
 
 
 @click.command()
@@ -120,6 +121,7 @@ def diff(
             min_fc, min_expn, lm_flag, eps, ss_flag, 
             verbose=verbose
         )
+        pb.helpers.cleanup()
 
         # diff segment read count
         input_file, conditions = [], []
@@ -149,6 +151,7 @@ def diff(
             output=os.path.join(temp_diff_segments_output, "diff"),
             n_jobs=processes,
         )
+        pb.helpers.cleanup()
 
         # diff_ru
         input_file = {}
@@ -197,7 +200,6 @@ def diff(
             min_prxlCov=min_prxl_cov, pmax=pmax, 
             verbose=verbose, keep=keep
         )
-    pb.helpers.cleanup()
 
     if os.path.exists(temp_dir):
         rmtree(temp_dir)

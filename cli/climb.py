@@ -13,7 +13,10 @@ import click
 import pybedtools as pb
 import pysam
 
+from loguru import logger
+
 from src import get_junction_counts, mountainClimberTU, merge_tus, mountainClimberRU, mountainClimberCP
+from src.functions import run_command, exists
 
 
 def __single_process__(args):
@@ -21,26 +24,31 @@ def __single_process__(args):
         pysam.index(args['input_file'])
 
     jxn = args['output'] + "_jxn.bed"
-    if not os.path.exists(jxn):
+    if not exists(jxn):
         get_junction_counts.make_intron_bed(
             args['input_file'], jxn, 
             overhang = args['overhang'], min_intron = args['min_intron'], 
             max_intron = args['max_intron'], strandedness = args['strand']
         )
+    else:
+        logger.info("{} exists, pass", jxn)
 
-    print("bedtools genomecov")
     bedgraph = args['output'] + ".bedgraph"
-    if not os.path.exists(bedgraph):
+    if not exists(bedgraph):
         check_call(f"bedtools genomecov -trackline -bg -split -ibam {args['input_file']} -g {args['output']} > {bedgraph}", shell=True, cwd = os.path.dirname(args['output']))
+    else:
+        logger.info("{} exists, pass", bedgraph)
 
-    print("moutainClimberTU")
+
     tu = args['output'] + "_tu.bed"
-    if not os.path.exists(tu):
+    if not exists(tu):
         mountainClimberTU.process(
             bedgraph, jxn, args['gsize'], tu, args['strand_in_int'].get(args['strand'], 0), 
             args['min_jxn_count'], args['min_percent'], 
             args['min_reads'], args['window_size']
         )
+    else:
+        logger.info("{} exists, pass", tu)
 
     args["jxn"] = jxn
     args["tu"] = tu
@@ -50,22 +58,28 @@ def __single_process__(args):
 
 def __single_process_cp_ru__(args):
 
-    mountainClimberCP.run(
-		input_bg=args["bedgraph"], input_bg_minus=args["strand"] == "fr-secondstrand",
-        input_regions=args['merged_ref'], output=args["output"] + "_CP.bed",
-		genome=args['genome'], plot=args['plot'], junc=args["jxn"], juncdist=args["juncdist"],
-		minjxncount=args["min_jxn_count"], min_length=args['min_length'], min_expn=args['min_expn'],
-		test_thresh=args['test_thresh'], winsize=args['winsize'], peak_min_dist=args['peak_min_dist'],
-		peak_thresh=args['peak_thresh'], fcthresh=args['fcthresh'], max_end_ru=args['max_end_ru'], 
-		verbose=args['verbose'], min_expn_distal=args["min_expn_distal"], min_segments=args["min_segments"]
-	)
+    if not exists(args["output"] + "_CP.bed"):
+        mountainClimberCP.run(
+            input_bg=args["bedgraph"], input_bg_minus=args["strand"] == "fr-secondstrand",
+            input_regions=args['merged_ref'], output=args["output"] + "_CP.bed",
+            genome=args['genome'], plot=args['plot'], junc=args["jxn"], juncdist=args["juncdist"],
+            minjxncount=args["min_jxn_count"], min_length=args['min_length'], min_expn=args['min_expn'],
+            test_thresh=args['test_thresh'], winsize=args['winsize'], peak_min_dist=args['peak_min_dist'],
+            peak_thresh=args['peak_thresh'], fcthresh=args['fcthresh'], max_end_ru=args['max_end_ru'], 
+            verbose=args['verbose'], min_expn_distal=args["min_expn_distal"], # min_segments=args["min_segments"]
+        )
+    else:
+        logger.info("{} exists, pass", args["output"] + "_CP.bed")
 
-    mountainClimberRU.run(
-        input_file=args["output"] + "_CP.bed", 
-        output=args["output"] + "_RU.bed",
-        min_segments=args['min_segments'], 
-        verbose=args['verbose']
-    )
+    if not exists(args["output"] + "_RU.bed"):
+        mountainClimberRU.run(
+            input_file=args["output"] + "_CP.bed", 
+            output=args["output"] + "_RU.bed",
+            min_segments=args['min_segments'], 
+            verbose=args['verbose']
+        )
+    else:
+        logger.info("{} exists, pass", args["output"] + "_RU.bed")
 
 
 @click.command()
@@ -169,11 +183,14 @@ def __single_process_cp_ru__(args):
     '--min_segments', type=int, default=3, show_default=True,
     help='Minimum number of segments required in the TU to calculate relative end usage.'
 )
-
+@click.option(
+    '--pair-end', type=click.BOOL, default=False, show_default=True,
+	help='Whether input is paired-end'
+)
 @click.option(
     '--verbose', type=click.BOOL, default=False, show_default=True,
 	help='Print progress.'
-)					   
+)
 @click.argument('input-files', type=click.Path(exists=True), nargs=-1)
 def climb(
     input_files, genome: str, reference: str, strand: str, output: str, 
@@ -181,7 +198,8 @@ def climb(
     min_jxn_count: int, window_size: int, min_percent: float, min_reads: int,
     peak_thresh: float, peak_min_dist: int, winsize: int, test_thresh: float,
     min_length: int, min_expn: int, min_expn_distal: int, fcthresh: float,
-    juncdist: int, max_end_ru: float, plot: bool, min_segments: int, verbose: bool
+    juncdist: int, max_end_ru: float, plot: bool, min_segments: int, verbose: bool,
+    pair_end: bool
 ):
     u""" Climb pipeline """
     if not os.path.exists(genome + ".fai"):
@@ -193,7 +211,7 @@ def climb(
     os.makedirs(temp_dir, exist_ok=True)
     pb.helpers.set_tempdir(temp_dir)
 
-    print("Get genome size")
+    logger.info("Get genome size")
     gsize = os.path.join(output, "genome.chrom.sizes")
     check_call(f"cut -f1,2 {genome}.fai > {gsize}", shell=True, cwd=os.path.dirname(output))
     strand_in_int = {'fr-firststrand': 1, 'fr-secondstrand': -1}
@@ -220,10 +238,23 @@ def climb(
     p.close()
     p.join()
 
-    print("merge")
+    logger.info("merge")
     tu_merge = os.path.join(output, "tus_merged")
     if not os.path.exists(tu_merge):
-        merge_tus.merge(infiles=[x["tu"] for x in res], output=tu_merge, refgtf=reference, ss="y" if strand in strand_in_int.keys() else "n")
+        merge_tus.merge(infiles=[x["tu"] for x in res if os.path.exists(x["tu"])], output=tu_merge, refgtf=reference, ss="y" if strand in strand_in_int.keys() else "n")
+
+    # logger.info("run rsem")
+    # temp_rsem = os.path.join(output, "RSEM")
+    # temp_rsem_ref = os.path.join(temp_rsem, "ref")
+    # os.makedirs(temp_rsem_ref, exist_ok=True)
+    # tu_merge = glob(tu_merge + "*.gtf")
+    # tu_merge = tu_merge[0]
+    # run_command(f"rsem-prepare-reference -p {n_jobs} --gtf {tu_merge} --star {genome} {temp_rsem_ref}")
+
+    # for i in input_files:
+    #     paired_end = "--paired-end" if pair_end else ""
+    #     transcriptome_bam = i.replace("Aligned.sortedByCoord.out.bam", "Aligned.toTranscriptome.out.bam")
+    #     run_command(f"rsem-calculate-expression -p {n_jobs} {paired_end} --append-names --seed 0 --estimate-rspd --sampling-for-bam --output-genome-bam --alignments {transcriptome_bam} {temp_rsem_ref} {os.path.join(temp_rsem, os.path.basename(i).split('.')[0])}")
 
     merged_ref = glob(os.path.join(output, "*_singleGenes.bed"))
     if merged_ref:

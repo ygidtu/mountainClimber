@@ -288,7 +288,7 @@ def run(input_file, output, min_segments, verbose):
 	sort_bedfile(infile=output, outfile=output)
 	# os.rename(output + '.sorted', output)
 
-	logger.info('finished:', str(datetime.now().time()))
+	logger.info('finished: {}', str(datetime.now().time()))
 
 
 def main(argv):

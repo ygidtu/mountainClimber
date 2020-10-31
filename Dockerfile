@@ -11,7 +11,7 @@ RUN apt-key adv --keyserver keys.gnupg.net --recv-key 'E19F5F87128899B192B1A2C2A
     echo 'deb http://mirrors.aliyun.com/debian/ buster-backports main non-free contrib' >> /etc/apt/sources.list && \
     echo 'deb-src http://mirrors.aliyun.com/debian/ buster-backports main non-free contrib' >> /etc/apt/sources.list && \
     echo 'deb http://cloud.r-project.org/bin/linux/debian buster-cran40/' >> /etc/apt/sources.list && \
-    apt update && apt install -y samtools bedtools r-base
+    apt update && apt install -y samtools bedtools r-base STAR rsem
 
 
 RUN pip install -i https://mirrors.aliyun.com/pypi/simple click peakutils pysam pybedtools matplotlib loguru sklearn

@@ -14,6 +14,12 @@ import pysam
 
 from loguru import logger
 
+try:
+	from functions import sort_bedfile
+except ImportError:
+	from src.functions import sort_bedfile
+
+
 
 def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strandedness):
 	"""
@@ -27,7 +33,7 @@ def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strande
 	"""
 
 	bamfile = pysam.AlignmentFile(bam_file, "rb")
-	out = open(outfile + '.tmp','w')
+	out = open(outfile,'w')
 	overhang, min_intron, max_intron = map(int, (overhang, min_intron, max_intron))
 
 	if strandedness == 'fr-firststrand':
@@ -75,8 +81,8 @@ def make_intron_bed(bam_file, outfile, overhang, min_intron, max_intron, strande
 	bamfile.close()
 	out.close()
 
-	os.system('cat %s.tmp | sort -k1,1 -k2,2n > %s' %(outfile, outfile))
-	os.system('rm  %s.tmp' %(outfile))
+	sort_bedfile(outfile, outfile, sort_by_bedtools=True)
+	
 	# To run separate chromosomes at the time or all at once
 	chrm_number = list(set(list(junctions_idme.values())[0]))
 

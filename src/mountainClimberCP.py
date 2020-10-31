@@ -456,12 +456,11 @@ def infer_strand(intron_list, chrom, genome, verbose):
 
 
 def run(
-	input_bg, input_bg_minus, input_regions, output, 
+	input_bg, input_bg_minus, input_regions, output,
 	genome, plot, junc, minjxncount, juncdist,
-	min_length, test_thresh, 
+	min_length, test_thresh,
 	min_expn, min_expn_distal,
-	min_segments,
-	winsize, peak_thresh, peak_min_dist, 
+	winsize, peak_thresh, peak_min_dist,
 	fcthresh, max_end_ru, verbose):
 	# --------------------------------------------------
 	# main routine
@@ -549,7 +548,7 @@ def run(
 		for l, line in enumerate(f):
 			maxl = l
 
-	o = open(output + '.temp', 'w')
+	o = open(output, 'w')
 	with open(bgfile, 'r') as f:
 		for l, line in enumerate(f):
 			# not EOF -> read the line
@@ -902,7 +901,7 @@ def run(
 															to_delete.append(ind)
 														else:  # keep the change point with lower t-test p-value
 															to_delete.append(ind) if ind2tp[peak_inds_ttest[ind]] > ind2tp[peak_inds_ttest[ind - 1]] else to_delete.append(ind - 1)
-												
+
 												to_delete = [x for x in to_delete if x < len(peak_inds_ttest)]
 												peak_inds_ttest = np.delete(peak_inds_ttest, to_delete)
 												if verbose:
@@ -1344,9 +1343,7 @@ def run(
 
 	o.close()
 
-
-	sort_bedfile(output + '.temp', output)
-	os.remove(output + '.temp')
+	sort_bedfile(output, output, sort_by_bedtools = True)
 
 	if verbose:
 		logger.debug('{} total TUs with reads, {} annotated', count_genes_with_reads, count_genes_with_reads_annotated)
@@ -1419,12 +1416,12 @@ def main(argv):
 	run(
 		input_bg=args.input_bg, input_bg_minus=args.input_bg_minus,
 		input_regions=args.input_regions, output=args.output,
-		genome=args.genome, plot=args.plot, 
+		genome=args.genome, plot=args.plot,
 		junc=args.junc, minjxncount=args.minjxncount, juncdist=args.juncdist,
-		min_length=args.min_length, min_expn=args.min_expn, min_expn_distal=args.min_expn.distal,
+		min_length=args.min_length, min_expn=args.min_expn, min_expn_distal=args.min_expn_distal,
 		test_thresh=args.test_thresh, winsize=args.winsize, peak_min_dist=args.peak_min_dist,
-		peak_thresh=args.peak_thresh, fcthresh=args.fcthresh, max_end_ru=args.max_end_ru, 
-		verbose=args.verbose, min_segments=args.min_segments
+		peak_thresh=args.peak_thresh, fcthresh=args.fcthresh, max_end_ru=args.max_end_ru,
+		verbose=args.verbose
 	)
 
 # boilerplate

@@ -330,8 +330,8 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 		# === print output -> unsorted bed format ===
 		logger.info("printing output (unsorted): {}", str(datetime.now().time()))
 		transcripts_trimmed_list = list(sorted(transcripts_trimmed.keys()))
-		output_temp = output + '.temp'
-		o = open(output_temp, 'w')
+
+		o = open(output, 'w+')
 		for ind, tx in enumerate(transcripts_trimmed_list):
 			(chrom, start, end) = tx
 			# if not chrom.startswith('chr'):
@@ -343,10 +343,8 @@ def process(bedgraph, junc, genome, output, strand, minjxncount, min_percent, mi
 		o.close()
 
 		# === output: sorted bed format & delete the temp unsorted file ===
-		sort_bedfile(output_temp, output)
+		sort_bedfile(output, output, sort_by_bedtools = True)
 
-		# === clean up ===
-		os.remove(output_temp)
 
 	# === clean up ===
 	os.remove(outfile_temp_windows)

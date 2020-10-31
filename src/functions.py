@@ -13,7 +13,7 @@ from loguru import logger
 def run_command(cmd, stdin=0, stdoutfile=0, printflag=False):
 	"""run a subprocess"""
 	if printflag:
-		print (' '.join(cmd))
+		logger.debug(' '.join(cmd))
 	if stdin == 0 and stdoutfile == 0:
 		p = Popen(cmd, stdout=PIPE, stderr=PIPE)
 		stdout, stderr = p.communicate()
@@ -68,3 +68,17 @@ def sort_bedfile(infile, outfile, add_header: bool = True, sort_by_bedtools: boo
 
 	if outfile.endswith(".sorted"):
 		os.rename(outfile, outfile.replace(".sorted", ""))
+
+
+def exists(infile) -> bool:
+	if not os.path.exists(infile):
+		return False
+
+	try:
+		with open(infile) as r:
+			for line in r:
+				continue
+	except EOFError:
+		return False
+
+	return True

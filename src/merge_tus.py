@@ -14,6 +14,10 @@ from collections import defaultdict
 import pybedtools as pb
 
 from loguru import logger
+try:
+	from functions import sort_bedfile
+except ImportError:
+	from src.functions import sort_bedfile
 
 
 def check_empty_file(bedfile):
@@ -495,6 +499,9 @@ def merge(infiles, output, refgtf, ss):
 			o.write(line)
 	f.close()
 	o.close()
+
+	sort_bedfile(out_annot_singleGenes_bed, out_annot_singleGenes_bed, sort_by_bedtools=True)
+	sort_bedfile(out_annot_bed, out_annot_bed, sort_by_bedtools=True)
 
 	logger.info('finished: {}', str(datetime.now().time()))
 
